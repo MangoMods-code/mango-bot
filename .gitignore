@@ -1,0 +1,13 @@
+# Secrets — never commit these
+config.json
+.env
+
+# Database — lives on Railway volume, not in the repo
+data/
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
