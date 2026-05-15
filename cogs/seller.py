@@ -28,7 +28,6 @@ def get_nested_value(obj, path):
 
 
 async def fetch_generic_api_balance(variant: dict):
-    """Fetch external balance for a generic API variant (not Aegis)."""
     if not variant.get("api_balance_url"):
         return None
     try:
@@ -136,19 +135,69 @@ class Seller(commands.Cog):
                         f"> {v_s} {t}  **{v['name']}** — **{v['price']}** bal{si}  *(ID: `{v['id']}`)*"
                     )
             lines.append("")
-
         chunks = paginate_items(lines, 15)
         pages = []
         for i, chunk in enumerate(chunks, 1):
             desc = f"{DIVIDER}\n\n" + "\n".join(chunk)
             pages.append(mango_embed(f"🥭  Products — Page {i}/{len(chunks)}", desc))
-
         if len(pages) == 1:
             await interaction.response.send_message(embed=pages[0], ephemeral=True)
         else:
             await interaction.response.send_message(
                 embed=pages[0], view=PaginatorView(pages, interaction.user.id), ephemeral=True
             )
+
+    # ── BUYER GROUPS ──────────────────────────────────────────────────────────
+
+    @app_commands.command(name="buyergroups", description="View buyer group links for your customers")
+    async def buyergroups(self, interaction: discord.Interaction):
+        if requires_dm(interaction):
+            return await interaction.response.send_message(embed=dm_only_error(), ephemeral=True)
+
+        # Only sellers (and the owner) should see this
+        user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
+        if not user["is_seller"] and not is_owner(interaction):
+            return await interaction.response.send_message(
+                embed=error_embed("🔒 You don't have seller permissions."), ephemeral=True
+            )
+
+        groups = await db.get_all_buyer_groups()
+
+        if not groups:
+            return await interaction.response.send_message(
+                embed=mango_embed(
+                    "📲  Buyer Groups",
+                    "No buyer groups have been set up yet.\n\n"
+                    "The owner can add them with `/setbuyergroup`."
+                ),
+                ephemeral=True,
+            )
+
+        description = (
+            f"⛔  **SELLER EYES ONLY — DO NOT SHARE THESE LINKS**\n"
+            f"These links are for **your** buyer groups that you set up.\n"
+            f"Do **NOT** send these directly to your customers.\n"
+            f"You must create your own buyer group/tutorial for them.\n"
+            f"{DIVIDER}\n\n"
+        )
+
+        for g in groups:
+            description += f"**{g['name']}**\n> {g['link']}\n\n"
+
+        description += (
+            f"{DIVIDER}\n"
+            f"⛔  **DO NOT SHARE — SELLER ONLY**"
+        )
+
+        embed = discord.Embed(
+            title="📲  Buyer Groups",
+            description=description,
+            color=discord.Colour.from_str("#FF3B3B"),  # Red to reinforce the warning
+        )
+        embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
+        embed.timestamp = discord.utils.utcnow()
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── GENERATE KEY ─────────────────────────────────────────────────────────
 
@@ -171,13 +220,11 @@ class Seller(commands.Cog):
         owner_mode = is_owner(interaction)
         balance_before = user["balance"]
 
-        # ── CHECK 1: Seller? ─────────────────────────────────────────────────
         if not user["is_seller"] and not owner_mode:
             return await interaction.followup.send(
                 embed=error_embed("🔒 You don't have seller permissions.\n\nAsk the bot owner to grant you access.")
             )
 
-        # ── CHECK 2: In server? ──────────────────────────────────────────────
         if not owner_mode:
             try:
                 guild = self.bot.get_guild(int(cfg.GUILD_ID)) or await self.bot.fetch_guild(int(cfg.GUILD_ID))
@@ -190,7 +237,6 @@ class Seller(commands.Cog):
             except Exception:
                 return await interaction.followup.send(embed=error_embed("Could not verify server membership."))
 
-        # ── CHECK 3: Variant? ────────────────────────────────────────────────
         var = await db.get_variant(variant)
         if not var:
             return await interaction.followup.send(embed=error_embed("Variant not found. Use `/products`."))
@@ -202,7 +248,6 @@ class Seller(commands.Cog):
         if not product or not product["enabled"]:
             return await interaction.followup.send(embed=error_embed(f"**{var['product_name']}** is disabled."))
 
-        # ── CHECK 4: Internal balance? ───────────────────────────────────────
         total_cost = var["price"] * amount
         if not owner_mode and user["balance"] < total_cost:
             return await interaction.followup.send(embed=error_embed(
@@ -216,25 +261,15 @@ class Seller(commands.Cog):
         api_balance_before = None
         api_balance_after = None
 
-        # ════════════════════════════════════════════════════════════════════
-        # AEGIS TYPE — one API call returns all keys + balance in one shot
-        # ════════════════════════════════════════════════════════════════════
         if var["type"] == "aegis":
             if not var.get("aegis_category") or not var.get("aegis_service"):
                 return await interaction.followup.send(
-                    embed=error_embed(
-                        f"**{label}** isn't fully configured yet.\n\n"
-                        f"The owner needs to run `/setaegis` on this variant."
-                    )
+                    embed=error_embed(f"**{label}** isn't configured yet. The owner needs to run `/setaegis`.")
                 )
             if not cfg.AEGIS_API_KEY or not cfg.AEGIS_API_SECRET:
                 return await interaction.followup.send(
-                    embed=error_embed(
-                        "Aegis API credentials are not set.\n\n"
-                        "The owner needs to add `AEGIS_API_KEY` and `AEGIS_API_SECRET` to Railway."
-                    )
+                    embed=error_embed("Aegis API credentials are not set. Contact the owner.")
                 )
-
             try:
                 result = await aegis_api.create_order(
                     category=var["aegis_category"],
@@ -243,30 +278,18 @@ class Seller(commands.Cog):
                     buyer_name=interaction.user.name,
                 )
                 data = result.get("data", {})
-
-                # Extract keys from the response (array)
                 generated_keys = data.get("keys", [])
                 if not generated_keys:
-                    return await interaction.followup.send(
-                        embed=error_embed("Aegis API returned no keys. Contact the owner.")
-                    )
-
-                # Extract balance info — already in the response, no extra call needed
+                    return await interaction.followup.send(embed=error_embed("Aegis returned no keys. Contact the owner."))
                 api_balance_before = data.get("balance_before")
                 api_balance_after  = data.get("balance_after")
-
-                # Record each key and deduct internal balance
                 for key_value in generated_keys:
                     await db.record_key(variant, str(key_value), str(interaction.user.id))
                     if not owner_mode:
                         await db.subtract_balance(str(interaction.user.id), var["price"])
-
             except Exception as e:
                 return await interaction.followup.send(embed=error_embed(f"Aegis API error:\n{e}"))
 
-        # ════════════════════════════════════════════════════════════════════
-        # STOCK TYPE — pull from local key pool
-        # ════════════════════════════════════════════════════════════════════
         elif var["type"] == "stock":
             for _ in range(amount):
                 stock_key = await db.get_next_stock_key(variant)
@@ -274,18 +297,13 @@ class Seller(commands.Cog):
                     if generated_keys:
                         break
                     msg = "Use `/stock` to restock." if owner_mode else "Contact the owner."
-                    return await interaction.followup.send(
-                        embed=error_embed(f"**{label}** is out of stock.\n\n{msg}")
-                    )
+                    return await interaction.followup.send(embed=error_embed(f"**{label}** is out of stock.\n\n{msg}"))
                 await db.mark_stock_used(stock_key["id"])
                 await db.record_key(variant, stock_key["key_value"], str(interaction.user.id))
                 if not owner_mode:
                     await db.subtract_balance(str(interaction.user.id), var["price"])
                 generated_keys.append(stock_key["key_value"])
 
-        # ════════════════════════════════════════════════════════════════════
-        # GENERIC API TYPE — one call per key, configurable URL
-        # ════════════════════════════════════════════════════════════════════
         elif var["type"] == "api":
             api_balance_before = await fetch_generic_api_balance(var)
             for _ in range(amount):
@@ -303,9 +321,7 @@ class Seller(commands.Cog):
                             if resp.status != 200:
                                 if generated_keys:
                                     break
-                                return await interaction.followup.send(
-                                    embed=error_embed(f"API error ({resp.status}).")
-                                )
+                                return await interaction.followup.send(embed=error_embed(f"API error ({resp.status})."))
                             data = await resp.json(content_type=None)
                     key_value = get_nested_value(data, var["api_key_path"] or "key")
                     if not key_value:
@@ -321,11 +337,9 @@ class Seller(commands.Cog):
                     if generated_keys:
                         break
                     return await interaction.followup.send(embed=error_embed("Failed to reach the API. Try again."))
-
             if generated_keys:
                 api_balance_after = await fetch_generic_api_balance(var)
 
-        # ── BUILD DELIVERY EMBED ──────────────────────────────────────────────
         updated_user = await db.get_user(str(interaction.user.id))
         actual_cost = var["price"] * len(generated_keys)
 
@@ -353,7 +367,6 @@ class Seller(commands.Cog):
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed)
 
-        # ── RECEIPT ───────────────────────────────────────────────────────────
         if not owner_mode:
             receipt_desc = (
                 f"**{label}**\n{DIVIDER_SHORT}\n\n"
@@ -377,7 +390,6 @@ class Seller(commands.Cog):
                 ephemeral=interaction.guild is not None,
             )
 
-        # ── LOG ───────────────────────────────────────────────────────────────
         await send_log(self.bot, log_keygen(
             user=interaction.user,
             variant_label=label,
@@ -404,6 +416,7 @@ class Seller(commands.Cog):
                 "`/balance` — View your balance\n"
                 "`/mykeys` — View your generated keys\n"
                 "`/products` — See products & variants\n"
+                "`/buyergroups` — Your buyer group links\n"
                 "`/help` — This message"
             ),
             inline=False,
@@ -419,8 +432,8 @@ class Seller(commands.Cog):
                 value=(
                     "`/addproduct` `/addvariant` `/removeproduct` `/removevariant`\n"
                     "`/setprice` `/toggleproduct` `/togglevariant`\n"
-                    "`/setaegis` `/aegisservices` — Aegis API setup\n"
-                    "`/setupapi` `/setapibalance` — Generic API setup\n"
+                    "`/setaegis` `/aegisservices` — Aegis API\n"
+                    "`/setupapi` `/setapibalance` — Generic API\n"
                     "`/stock` `/stockcount`"
                 ),
                 inline=False,
@@ -430,7 +443,8 @@ class Seller(commands.Cog):
                 value=(
                     "`/bankey` `/unbankey` `/removekey`\n"
                     "`/clearkeyhistory` `/maintenance`\n"
-                    "`/apibalance` `/dmannounce`"
+                    "`/apibalance` `/dmannounce`\n"
+                    "`/setbuyergroup` `/removebuyergroup`"
                 ),
                 inline=False,
             )
@@ -439,3 +453,4 @@ class Seller(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Seller(bot))
+
