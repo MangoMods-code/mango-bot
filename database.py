@@ -5,11 +5,15 @@ import config as cfg
 
 DB_PATH = cfg.DB_PATH
 
+# Valid variant types — validated in Python, no CHECK constraint in SQL
+# (SQLite can't ALTER a CHECK constraint after table creation)
+VALID_TYPES = ("stock", "api", "aegis")
+
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode = WAL")
-        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute("PRAGMA foreign_keys = OFF")  # Off during migrations
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -20,6 +24,7 @@ async def init_db():
                 created_at   TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,13 +34,15 @@ async def init_db():
                 created_at   TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
+
+        # Create variants fresh if it doesn't exist yet (no CHECK constraint)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS variants (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 product_id       INTEGER NOT NULL,
                 name             TEXT NOT NULL,
                 price            INTEGER NOT NULL DEFAULT 1,
-                type             TEXT NOT NULL DEFAULT 'stock' CHECK(type IN ('stock', 'api', 'aegis')),
+                type             TEXT NOT NULL DEFAULT 'stock',
                 api_url          TEXT,
                 api_method       TEXT DEFAULT 'GET',
                 api_headers      TEXT DEFAULT '{}',
@@ -50,6 +57,54 @@ async def init_db():
                 FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
             )
         """)
+
+        # ── MIGRATE variants if it has an old CHECK constraint ────────────────
+        # SQLite stores the CREATE TABLE SQL in sqlite_master.
+        # If the old constraint is there, we rebuild the table to remove it.
+        cursor = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='variants'"
+        )
+        row = await cursor.fetchone()
+        if row and "CHECK" in (row[0] or ""):
+            # Rebuild: copy data → drop old → rename new
+            await db.execute("""
+                CREATE TABLE variants_new (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id       INTEGER NOT NULL,
+                    name             TEXT NOT NULL,
+                    price            INTEGER NOT NULL DEFAULT 1,
+                    type             TEXT NOT NULL DEFAULT 'stock',
+                    api_url          TEXT,
+                    api_method       TEXT DEFAULT 'GET',
+                    api_headers      TEXT DEFAULT '{}',
+                    api_body         TEXT DEFAULT '{}',
+                    api_key_path     TEXT DEFAULT 'key',
+                    api_balance_url  TEXT,
+                    api_balance_path TEXT DEFAULT 'balance',
+                    aegis_category   INTEGER,
+                    aegis_service    INTEGER,
+                    enabled          INTEGER NOT NULL DEFAULT 1,
+                    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                )
+            """)
+            # Copy whatever columns exist in the old table into the new one
+            await db.execute("""
+                INSERT INTO variants_new (
+                    id, product_id, name, price, type,
+                    api_url, api_method, api_headers, api_body, api_key_path,
+                    enabled, created_at
+                )
+                SELECT
+                    id, product_id, name, price, type,
+                    api_url, api_method, api_headers, api_body, api_key_path,
+                    enabled, created_at
+                FROM variants
+            """)
+            await db.execute("DROP TABLE variants")
+            await db.execute("ALTER TABLE variants_new RENAME TO variants")
+            print("  ✅ Migrated variants table (removed old CHECK constraint)")
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS stock (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +115,7 @@ async def init_db():
                 FOREIGN KEY (variant_id) REFERENCES variants(id) ON DELETE CASCADE
             )
         """)
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS keys (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +128,7 @@ async def init_db():
                 FOREIGN KEY (generated_by) REFERENCES users(discord_id)
             )
         """)
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -79,18 +136,19 @@ async def init_db():
             )
         """)
 
-        migrations = [
+        # ── Column migrations ─────────────────────────────────────────────────
+        for col, definition in [
             ("api_balance_url",  "TEXT"),
             ("api_balance_path", "TEXT DEFAULT 'balance'"),
             ("aegis_category",   "INTEGER"),
             ("aegis_service",    "INTEGER"),
-        ]
-        for col, definition in migrations:
+        ]:
             try:
                 await db.execute(f"ALTER TABLE variants ADD COLUMN {col} {definition}")
             except Exception:
                 pass
 
+        await db.execute("PRAGMA foreign_keys = ON")
         await db.commit()
 
 
@@ -123,8 +181,6 @@ async def set_maintenance(enabled):
 
 
 async def get_all_buyer_groups():
-    """Return all buyer groups stored in settings (keys starting with 'buyergroup_').
-    Returns a list of dicts with 'name' and 'link', sorted alphabetically."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT key, value FROM settings WHERE key LIKE 'buyergroup_%' AND value != '' ORDER BY key"
@@ -267,7 +323,10 @@ async def set_product_enabled(product_id, enabled):
 async def add_variant(product_id, name, price, vtype):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        await db.execute("INSERT INTO variants (product_id, name, price, type) VALUES (?, ?, ?, ?)", (product_id, name, price, vtype))
+        await db.execute(
+            "INSERT INTO variants (product_id, name, price, type) VALUES (?, ?, ?, ?)",
+            (product_id, name, price, vtype)
+        )
         await db.commit()
         cursor = await db.execute("SELECT * FROM variants WHERE rowid = last_insert_rowid()")
         return dict(await cursor.fetchone())
@@ -294,7 +353,9 @@ async def get_variant(variant_id):
 async def get_variants_for_product(product_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM variants WHERE product_id = ? ORDER BY price ASC", (product_id,))
+        cursor = await db.execute(
+            "SELECT * FROM variants WHERE product_id = ? ORDER BY price ASC", (product_id,)
+        )
         return [dict(r) for r in await cursor.fetchall()]
 
 
@@ -347,13 +408,19 @@ async def update_variant_api(variant_id, api_url, api_method, api_headers, api_b
 
 async def update_variant_balance_check(variant_id, balance_url, balance_path):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE variants SET api_balance_url=?, api_balance_path=? WHERE id=?", (balance_url, balance_path, variant_id))
+        await db.execute(
+            "UPDATE variants SET api_balance_url=?, api_balance_path=? WHERE id=?",
+            (balance_url, balance_path, variant_id)
+        )
         await db.commit()
 
 
 async def update_variant_aegis(variant_id, category, service):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE variants SET aegis_category=?, aegis_service=? WHERE id=?", (category, service, variant_id))
+        await db.execute(
+            "UPDATE variants SET aegis_category=?, aegis_service=? WHERE id=?",
+            (category, service, variant_id)
+        )
         await db.commit()
 
 
@@ -364,7 +431,9 @@ async def update_variant_aegis(variant_id, category, service):
 async def add_stock_keys(variant_id, keys):
     async with aiosqlite.connect(DB_PATH) as db:
         for key in keys:
-            await db.execute("INSERT INTO stock (variant_id, key_value) VALUES (?, ?)", (variant_id, key.strip()))
+            await db.execute(
+                "INSERT INTO stock (variant_id, key_value) VALUES (?, ?)", (variant_id, key.strip())
+            )
         await db.commit()
     return len(keys)
 
@@ -372,7 +441,9 @@ async def add_stock_keys(variant_id, keys):
 async def get_next_stock_key(variant_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM stock WHERE variant_id = ? AND is_used = 0 ORDER BY id ASC LIMIT 1", (variant_id,))
+        cursor = await db.execute(
+            "SELECT * FROM stock WHERE variant_id = ? AND is_used = 0 ORDER BY id ASC LIMIT 1", (variant_id,)
+        )
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -385,7 +456,9 @@ async def mark_stock_used(stock_id):
 
 async def get_stock_count(variant_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM stock WHERE variant_id = ? AND is_used = 0", (variant_id,))
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM stock WHERE variant_id = ? AND is_used = 0", (variant_id,)
+        )
         row = await cursor.fetchone()
         return row[0] if row else 0
 
@@ -411,7 +484,10 @@ async def get_all_stock_counts():
 async def record_key(variant_id, key_value, generated_by):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        await db.execute("INSERT INTO keys (variant_id, key_value, generated_by) VALUES (?, ?, ?)", (variant_id, key_value, generated_by))
+        await db.execute(
+            "INSERT INTO keys (variant_id, key_value, generated_by) VALUES (?, ?, ?)",
+            (variant_id, key_value, generated_by)
+        )
         await db.commit()
         cursor = await db.execute("SELECT * FROM keys WHERE rowid = last_insert_rowid()")
         return dict(await cursor.fetchone())
@@ -480,5 +556,6 @@ async def clear_all_keys():
         await db.execute("DELETE FROM keys")
         await db.commit()
         return count
+
 
 
