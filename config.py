@@ -16,17 +16,20 @@ def _get(key, default=""):
     return os.environ.get(key, _file_config.get(key, default))
 
 
-BOT_TOKEN = _get("BOT_TOKEN")
-OWNER_ID = _get("OWNER_ID")
-GUILD_ID = _get("GUILD_ID")
+BOT_TOKEN      = _get("BOT_TOKEN")
+OWNER_ID       = _get("OWNER_ID")
+GUILD_ID       = _get("GUILD_ID")
 LOG_CHANNEL_ID = _get("LOG_CHANNEL_ID")
-EMBED_COLOR = _get("EMBED_COLOR", "FF8C00")
-BOT_NAME = _get("BOT_NAME", "Mango Bot")
-BOT_FOOTER = _get("BOT_FOOTER", "Mango Bot • Key Reseller")
+EMBED_COLOR    = _get("EMBED_COLOR", "FF8C00")
+BOT_NAME       = _get("BOT_NAME", "Mango Bot")
+BOT_FOOTER     = _get("BOT_FOOTER", "Mango Bot • Key Reseller")
 
-# Database path — on Railway use a volume mount for persistence.
-# Set DATA_DIR env var to your volume mount path (e.g. /data).
-# Locally defaults to ./data next to the code.
+# Aegis API credentials — set these once in Railway, used for all Aegis variants.
+AEGIS_API_KEY    = _get("AEGIS_API_KEY")
+AEGIS_API_SECRET = _get("AEGIS_API_SECRET")
+AEGIS_BASE_URL   = _get("AEGIS_BASE_URL", "https://clientarea.aegisonline.site")
+
+# Database path — on Railway this should point to a volume mount (e.g. /data).
 DATA_DIR = _get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
-DB_PATH = os.path.join(DATA_DIR, "bot.db")
+DB_PATH  = os.path.join(DATA_DIR, "bot.db")
 os.makedirs(DATA_DIR, exist_ok=True)
