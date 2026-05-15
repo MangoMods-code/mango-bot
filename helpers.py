@@ -5,7 +5,6 @@ from discord.ui import View, Button
 import config as cfg
 
 EMBED_COLOR = discord.Colour(int(cfg.EMBED_COLOR, 16))
-LOG_COLOR = discord.Colour.from_str("#2F3136")
 
 DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 DIVIDER_SHORT = "━━━━━━━━━━━━━━━━"
@@ -69,6 +68,7 @@ def maintenance_embed():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def send_log(bot, embed):
+    """Send a log embed to the configured log channel. Fails silently."""
     try:
         channel_id = cfg.LOG_CHANNEL_ID
         if not channel_id or not str(channel_id).isdigit():
@@ -83,20 +83,43 @@ async def send_log(bot, embed):
 
 
 def log_keygen(user, variant_label, count, price_each, total_cost,
-               balance_before, balance_after, keys, owner_mode):
+               balance_before, balance_after, keys, owner_mode,
+               api_balance_before=None, api_balance_after=None):
+    """
+    Build a log embed for a key generation event.
+    api_balance_before / api_balance_after are the external reseller panel balance
+    fetched before and after generation — shown when this is an API product.
+    """
     keys_preview = ", ".join(f"`{k[:12]}…`" if len(k) > 12 else f"`{k}`" for k in keys[:5])
     if len(keys) > 5:
         keys_preview += f" *+{len(keys) - 5} more*"
-    embed = discord.Embed(title="🔑  Key Generated", color=discord.Colour.from_str("#FF8C00"), timestamp=discord.utils.utcnow())
+
+    embed = discord.Embed(
+        title="🔑  Key Generated",
+        color=discord.Colour.from_str("#FF8C00"),
+        timestamp=discord.utils.utcnow(),
+    )
     embed.add_field(name="Seller", value=f"{user.mention} (`{user.name}`)", inline=True)
     embed.add_field(name="Product", value=variant_label, inline=True)
     embed.add_field(name="Keys", value=str(count), inline=True)
+
     if owner_mode:
-        embed.add_field(name="Cost", value="*Owner — free*", inline=True)
-        embed.add_field(name="Balance", value="N/A", inline=True)
+        embed.add_field(name="Internal Cost", value="*Owner — free*", inline=True)
+        embed.add_field(name="Internal Balance", value="N/A", inline=True)
     else:
-        embed.add_field(name="Cost", value=f"{price_each} × {count} = **{total_cost}**", inline=True)
-        embed.add_field(name="Balance", value=f"{balance_before} → **{balance_after}**", inline=True)
+        embed.add_field(name="Internal Cost", value=f"{price_each} × {count} = **{total_cost}**", inline=True)
+        embed.add_field(name="Internal Balance", value=f"{balance_before} → **{balance_after}**", inline=True)
+
+    # External API balance section — only shown for API-type keys
+    if api_balance_before is not None or api_balance_after is not None:
+        before_str = str(api_balance_before) if api_balance_before is not None else "N/A"
+        after_str = str(api_balance_after) if api_balance_after is not None else "N/A"
+        embed.add_field(
+            name="🌐 API Balance (External)",
+            value=f"{before_str} → **{after_str}**",
+            inline=False,
+        )
+
     embed.add_field(name="Keys Preview", value=keys_preview, inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.set_footer(text=f"User ID: {user.id}")
@@ -143,6 +166,20 @@ def log_clear_keys(admin, count):
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="Admin", value=f"{admin.mention}", inline=True)
+    embed.set_footer(text=f"Admin ID: {admin.id}")
+    return embed
+
+
+def log_announce(admin, message, sent, failed):
+    embed = discord.Embed(
+        title="📢  Announcement Sent",
+        color=discord.Colour.from_str("#1ABC9C"),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Admin", value=f"{admin.mention}", inline=True)
+    embed.add_field(name="Delivered", value=f"✅ {sent}", inline=True)
+    embed.add_field(name="Failed", value=f"❌ {failed}", inline=True)
+    embed.add_field(name="Message", value=message[:500], inline=False)
     embed.set_footer(text=f"Admin ID: {admin.id}")
     return embed
 
@@ -205,3 +242,4 @@ class DismissView(View):
 
 def paginate_items(items, per_page=ITEMS_PER_PAGE):
     return [items[i:i + per_page] for i in range(0, len(items), per_page)]
+
