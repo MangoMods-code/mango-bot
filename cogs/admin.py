@@ -17,7 +17,6 @@ from helpers import (
 
 
 def get_nested_value(obj, path):
-    """Dig into a nested dict using a dot-separated path."""
     parts = path.split(".")
     current = obj
     for part in parts:
@@ -37,7 +36,9 @@ class Admin(commands.Cog):
             await interaction.response.send_message(embed=server_only_error(), ephemeral=True)
             return True
         if not is_owner(interaction):
-            await interaction.response.send_message(embed=error_embed("🔒 Only the bot owner can use this command."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=error_embed("🔒 Only the bot owner can use this command."), ephemeral=True
+            )
             return True
         return False
 
@@ -56,6 +57,45 @@ class Admin(commands.Cog):
             embed = mango_embed("🟢  Maintenance Mode — OFF", f"Key generation back **online**.\n{DIVIDER_SHORT}\nSellers can generate keys again.")
         await interaction.response.send_message(embed=embed)
         await send_log(self.bot, log_maintenance(interaction.user, new_state))
+
+    # ── BUYER GROUPS ──────────────────────────────────────────────────────────
+
+    @app_commands.command(name="setbuyergroup", description="Set or update a buyer group link for sellers (Admin)")
+    @app_commands.describe(
+        name="Group name (e.g. Aegis, Certs, Fluorite)",
+        link="The Telegram or group link for this buyer group",
+    )
+    async def setbuyergroup(self, interaction: discord.Interaction, name: str, link: str):
+        if await self._admin_check(interaction):
+            return
+
+        key = f"buyergroup_{name.lower().strip()}"
+        await db.set_setting(key, link.strip())
+
+        embed = success_embed(
+            f"Buyer group **{name}** has been set.\n\n"
+            f"Link: {link}\n\n"
+            f"Sellers can view this with `/buyergroups` in DMs."
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="removebuyergroup", description="Remove a buyer group link (Admin)")
+    @app_commands.describe(name="Group name to remove (e.g. Aegis, Certs, Fluorite)")
+    async def removebuyergroup(self, interaction: discord.Interaction, name: str):
+        if await self._admin_check(interaction):
+            return
+
+        key = f"buyergroup_{name.lower().strip()}"
+        existing = await db.get_setting(key, default="")
+        if not existing:
+            return await interaction.response.send_message(
+                embed=error_embed(f"No buyer group found with the name **{name}**."), ephemeral=True
+            )
+
+        await db.set_setting(key, "")
+        await interaction.response.send_message(
+            embed=success_embed(f"Buyer group **{name}** has been removed."), ephemeral=True
+        )
 
     # ── API BALANCE CHECK ─────────────────────────────────────────────────────
 
@@ -77,7 +117,6 @@ class Admin(commands.Cog):
             )
 
         description = f"{DIVIDER}\n\n"
-
         for v in api_variants:
             label = f"{v['product_name']} — {v['name']}"
             try:
@@ -85,21 +124,18 @@ class Admin(commands.Cog):
                 async with aiohttp.ClientSession() as session:
                     async with session.get(v["api_balance_url"], headers=headers) as resp:
                         if resp.status != 200:
-                            description += f"🌐  **{label}**\n> ❌ Error fetching balance (HTTP {resp.status})\n\n"
+                            description += f"🌐  **{label}**\n> ❌ Error (HTTP {resp.status})\n\n"
                             continue
                         data = await resp.json()
-
                 balance = get_nested_value(data, v["api_balance_path"] or "balance")
                 if balance is None:
                     description += f"🌐  **{label}**\n> ⚠️ Balance not found at path `{v['api_balance_path']}`\n\n"
                 else:
-                    description += f"🌐  **{label}**\n> 💳 Balance: **{balance}**\n> Variant ID: `{v['id']}`\n\n"
-
+                    description += f"🌐  **{label}**\n> 💳 Balance: **{balance}**\n> ID: `{v['id']}`\n\n"
             except Exception as e:
-                description += f"🌐  **{label}**\n> ❌ Failed to reach API (`{e}`)\n\n"
+                description += f"🌐  **{label}**\n> ❌ Failed (`{e}`)\n\n"
 
-        embed = mango_embed("🌐  External API Balances", description)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=mango_embed("🌐  External API Balances", description))
 
     # ── DM ANNOUNCE ──────────────────────────────────────────────────────────
 
@@ -115,7 +151,6 @@ class Admin(commands.Cog):
         if not sellers:
             return await interaction.followup.send(embed=error_embed("No sellers registered yet."))
 
-        # Build the DM embed that gets sent to each seller
         announce_embed = discord.Embed(
             title="📢  Announcement",
             description=message,
@@ -137,18 +172,13 @@ class Admin(commands.Cog):
                 failed += 1
                 failed_names.append(seller["username"])
 
-        # Result embed
-        result_lines = (
-            f"Sent to **{sent}** seller(s).\n"
-            f"{DIVIDER_SHORT}\n"
-        )
+        result_lines = f"Sent to **{sent}** seller(s).\n{DIVIDER_SHORT}\n"
         if failed > 0:
             result_lines += f"❌ Failed to reach **{failed}** seller(s):\n"
             result_lines += ", ".join(f"`{n}`" for n in failed_names[:20])
             result_lines += "\n*(They likely have DMs disabled.)*"
 
-        result_embed = mango_embed("📢  Announcement Sent", result_lines)
-        await interaction.followup.send(embed=result_embed)
+        await interaction.followup.send(embed=mango_embed("📢  Announcement Sent", result_lines))
         await send_log(self.bot, log_announce(interaction.user, message, sent, failed))
 
     # ── USER MANAGEMENT ──────────────────────────────────────────────────────
@@ -166,7 +196,7 @@ class Admin(commands.Cog):
         granted = action == "grant"
         await db.set_seller_status(str(user.id), granted)
         if granted:
-            embed = success_embed(f"**{user.name}** granted seller permissions.\n\nThey can now DM the bot and use `/generatekey`!")
+            embed = success_embed(f"**{user.name}** granted seller permissions.\n\nThey can now DM me and use `/generatekey`!")
         else:
             embed = success_embed(f"**{user.name}** seller permissions revoked.")
         embed.set_thumbnail(url=user.display_avatar.url)
@@ -222,7 +252,9 @@ class Admin(commands.Cog):
             return
         users = await db.get_all_users()
         if not users:
-            return await interaction.response.send_message(embed=mango_embed("👥  Users", "No users registered yet."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=mango_embed("👥  Users", "No users registered yet."), ephemeral=True
+            )
         chunks = paginate_items(users, 8)
         pages = []
         for i, chunk in enumerate(chunks, 1):
@@ -231,14 +263,20 @@ class Admin(commands.Cog):
                 keys = await db.get_keys_by_user(u["discord_id"])
                 icon = "🏷️" if u["is_seller"] else "👤"
                 status = "Seller" if u["is_seller"] else "User"
-                desc += f"{icon}  **{u['username']}** — *{status}*\n> 💰 **{u['balance']}**  •  🔑 **{len(keys)}** keys\n> `{u['discord_id']}`\n\n"
+                desc += (
+                    f"{icon}  **{u['username']}** — *{status}*\n"
+                    f"> 💰 **{u['balance']}**  •  🔑 **{len(keys)}** keys\n"
+                    f"> `{u['discord_id']}`\n\n"
+                )
             embed = mango_embed(f"👥  All Users — Page {i}/{len(chunks)}", desc)
             embed.set_footer(text=f"🥭 {len(users)} total users  •  Page {i}/{len(chunks)}")
             pages.append(embed)
         if len(pages) == 1:
             await interaction.response.send_message(embed=pages[0], ephemeral=True)
         else:
-            await interaction.response.send_message(embed=pages[0], view=PaginatorView(pages, interaction.user.id), ephemeral=True)
+            await interaction.response.send_message(
+                embed=pages[0], view=PaginatorView(pages, interaction.user.id), ephemeral=True
+            )
 
     # ── KEY MANAGEMENT ───────────────────────────────────────────────────────
 
@@ -256,7 +294,9 @@ class Admin(commands.Cog):
             return await interaction.response.send_message(embed=error_embed("Already banned."), ephemeral=True)
         await db.ban_key(key_row["id"])
         label = f"{key_row['product_name']} — {key_row['variant_name']}"
-        await interaction.response.send_message(embed=mango_embed("🚫  Key Banned", f"**{label}** — Key #{key_row['id']}\n{DIVIDER_SHORT}\n`{key_row['key_value']}`"))
+        await interaction.response.send_message(
+            embed=mango_embed("🚫  Key Banned", f"**{label}** — Key #{key_row['id']}\n{DIVIDER_SHORT}\n`{key_row['key_value']}`")
+        )
 
     @app_commands.command(name="unbankey", description="Unban a license key (Admin)")
     @app_commands.describe(key="The license key or key ID to unban")
@@ -272,7 +312,9 @@ class Admin(commands.Cog):
             return await interaction.response.send_message(embed=error_embed("Not banned."), ephemeral=True)
         await db.unban_key(key_row["id"])
         label = f"{key_row['product_name']} — {key_row['variant_name']}"
-        await interaction.response.send_message(embed=success_embed(f"Key **#{key_row['id']}** for **{label}** unbanned.\n`{key_row['key_value']}`"))
+        await interaction.response.send_message(
+            embed=success_embed(f"Key **#{key_row['id']}** for **{label}** unbanned.\n`{key_row['key_value']}`")
+        )
 
     @app_commands.command(name="removekey", description="Permanently remove a license key (Admin)")
     @app_commands.describe(key="The license key or key ID to remove")
@@ -287,14 +329,20 @@ class Admin(commands.Cog):
         label = f"{key_row['product_name']} — {key_row['variant_name']}"
         key_id = key_row["id"]
         await db.remove_key(key_row["id"])
-        await interaction.response.send_message(embed=success_embed(f"Key **#{key_id}** for **{label}** permanently removed."))
+        await interaction.response.send_message(
+            embed=success_embed(f"Key **#{key_id}** for **{label}** permanently removed.")
+        )
 
     @app_commands.command(name="clearkeyhistory", description="Delete ALL generated key records (Admin)")
     async def clearkeyhistory(self, interaction: discord.Interaction):
         if await self._admin_check(interaction):
             return
         view = ConfirmClearView(interaction.user.id, self.bot)
-        embed = mango_embed("⚠️  Clear Key History", f"This will **permanently delete** every generated key record.\nStock already used stays used.\n{DIVIDER_SHORT}\n**Are you sure?**")
+        embed = mango_embed(
+            "⚠️  Clear Key History",
+            f"This will **permanently delete** every generated key record.\n"
+            f"Stock already used stays used.\n{DIVIDER_SHORT}\n**Are you sure?**"
+        )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
@@ -310,14 +358,19 @@ class ConfirmClearView(discord.ui.View):
     @discord.ui.button(label="Yes, clear everything", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm(self, interaction, button):
         count = await db.clear_all_keys()
-        await interaction.response.edit_message(embed=success_embed(f"Cleared **{count}** key record(s) from history."), view=None)
+        await interaction.response.edit_message(
+            embed=success_embed(f"Cleared **{count}** key record(s) from history."), view=None
+        )
         await send_log(self.bot, log_clear_keys(interaction.user, count))
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction, button):
-        await interaction.response.edit_message(embed=mango_embed("👍  Cancelled", "Key history was not cleared."), view=None)
+        await interaction.response.edit_message(
+            embed=mango_embed("👍  Cancelled", "Key history was not cleared."), view=None
+        )
 
 
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(Admin(bot), guild=guild)
+
