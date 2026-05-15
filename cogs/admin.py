@@ -1,5 +1,7 @@
 # cogs/admin.py — Admin commands (server-only, owner-only).
 
+import aiohttp
+import json
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -9,8 +11,20 @@ from helpers import (
     is_owner, mango_embed, error_embed, success_embed,
     server_only_error, DIVIDER, DIVIDER_SHORT,
     PaginatorView, paginate_items,
-    send_log, log_balance_change, log_seller_change, log_maintenance, log_clear_keys,
+    send_log, log_balance_change, log_seller_change,
+    log_maintenance, log_clear_keys, log_announce,
 )
+
+
+def get_nested_value(obj, path):
+    """Dig into a nested dict using a dot-separated path."""
+    parts = path.split(".")
+    current = obj
+    for part in parts:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
 
 
 class Admin(commands.Cog):
@@ -42,6 +56,100 @@ class Admin(commands.Cog):
             embed = mango_embed("🟢  Maintenance Mode — OFF", f"Key generation back **online**.\n{DIVIDER_SHORT}\nSellers can generate keys again.")
         await interaction.response.send_message(embed=embed)
         await send_log(self.bot, log_maintenance(interaction.user, new_state))
+
+    # ── API BALANCE CHECK ─────────────────────────────────────────────────────
+
+    @app_commands.command(name="apibalance", description="Check your current balance on all external key APIs (Admin)")
+    async def apibalance(self, interaction: discord.Interaction):
+        if await self._admin_check(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        api_variants = await db.get_all_api_variants()
+        if not api_variants:
+            return await interaction.followup.send(
+                embed=mango_embed(
+                    "🌐  API Balance",
+                    "No API variants have a balance URL configured.\n\n"
+                    "Use `/setapibalance` on an API-type variant to set it up."
+                )
+            )
+
+        description = f"{DIVIDER}\n\n"
+
+        for v in api_variants:
+            label = f"{v['product_name']} — {v['name']}"
+            try:
+                headers = json.loads(v["api_headers"] or "{}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(v["api_balance_url"], headers=headers) as resp:
+                        if resp.status != 200:
+                            description += f"🌐  **{label}**\n> ❌ Error fetching balance (HTTP {resp.status})\n\n"
+                            continue
+                        data = await resp.json()
+
+                balance = get_nested_value(data, v["api_balance_path"] or "balance")
+                if balance is None:
+                    description += f"🌐  **{label}**\n> ⚠️ Balance not found at path `{v['api_balance_path']}`\n\n"
+                else:
+                    description += f"🌐  **{label}**\n> 💳 Balance: **{balance}**\n> Variant ID: `{v['id']}`\n\n"
+
+            except Exception as e:
+                description += f"🌐  **{label}**\n> ❌ Failed to reach API (`{e}`)\n\n"
+
+        embed = mango_embed("🌐  External API Balances", description)
+        await interaction.followup.send(embed=embed)
+
+    # ── DM ANNOUNCE ──────────────────────────────────────────────────────────
+
+    @app_commands.command(name="dmannounce", description="DM all sellers an announcement (Admin)")
+    @app_commands.describe(message="The message to send to all sellers")
+    async def dmannounce(self, interaction: discord.Interaction, message: str):
+        if await self._admin_check(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        sellers = await db.get_all_sellers()
+        if not sellers:
+            return await interaction.followup.send(embed=error_embed("No sellers registered yet."))
+
+        # Build the DM embed that gets sent to each seller
+        announce_embed = discord.Embed(
+            title="📢  Announcement",
+            description=message,
+            color=discord.Colour(int(cfg.EMBED_COLOR, 16)),
+        )
+        announce_embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
+        announce_embed.timestamp = discord.utils.utcnow()
+
+        sent = 0
+        failed = 0
+        failed_names = []
+
+        for seller in sellers:
+            try:
+                user = await self.bot.fetch_user(int(seller["discord_id"]))
+                await user.send(embed=announce_embed)
+                sent += 1
+            except Exception:
+                failed += 1
+                failed_names.append(seller["username"])
+
+        # Result embed
+        result_lines = (
+            f"Sent to **{sent}** seller(s).\n"
+            f"{DIVIDER_SHORT}\n"
+        )
+        if failed > 0:
+            result_lines += f"❌ Failed to reach **{failed}** seller(s):\n"
+            result_lines += ", ".join(f"`{n}`" for n in failed_names[:20])
+            result_lines += "\n*(They likely have DMs disabled.)*"
+
+        result_embed = mango_embed("📢  Announcement Sent", result_lines)
+        await interaction.followup.send(embed=result_embed)
+        await send_log(self.bot, log_announce(interaction.user, message, sent, failed))
 
     # ── USER MANAGEMENT ──────────────────────────────────────────────────────
 
