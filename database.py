@@ -20,7 +20,6 @@ async def init_db():
                 created_at   TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
-
         await db.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +29,6 @@ async def init_db():
                 created_at   TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
-
         await db.execute("""
             CREATE TABLE IF NOT EXISTS variants (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +50,6 @@ async def init_db():
                 FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
             )
         """)
-
         await db.execute("""
             CREATE TABLE IF NOT EXISTS stock (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +60,6 @@ async def init_db():
                 FOREIGN KEY (variant_id) REFERENCES variants(id) ON DELETE CASCADE
             )
         """)
-
         await db.execute("""
             CREATE TABLE IF NOT EXISTS keys (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,7 +72,6 @@ async def init_db():
                 FOREIGN KEY (generated_by) REFERENCES users(discord_id)
             )
         """)
-
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -84,8 +79,6 @@ async def init_db():
             )
         """)
 
-        # Migrations: safely add new columns to existing databases.
-        # SQLite doesn't support IF NOT EXISTS on ALTER TABLE so we use try/except.
         migrations = [
             ("api_balance_url",  "TEXT"),
             ("api_balance_path", "TEXT DEFAULT 'balance'"),
@@ -96,7 +89,7 @@ async def init_db():
             try:
                 await db.execute(f"ALTER TABLE variants ADD COLUMN {col} {definition}")
             except Exception:
-                pass  # Column already exists — fine to ignore
+                pass
 
         await db.commit()
 
@@ -129,6 +122,22 @@ async def set_maintenance(enabled):
     await set_setting("maintenance", "1" if enabled else "0")
 
 
+async def get_all_buyer_groups():
+    """Return all buyer groups stored in settings (keys starting with 'buyergroup_').
+    Returns a list of dicts with 'name' and 'link', sorted alphabetically."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT key, value FROM settings WHERE key LIKE 'buyergroup_%' AND value != '' ORDER BY key"
+        )
+        rows = await cursor.fetchall()
+    groups = []
+    for key, value in rows:
+        raw_name = key[len("buyergroup_"):]
+        display_name = raw_name.title()
+        groups.append({"name": display_name, "link": value})
+    return groups
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # USER HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -140,15 +149,11 @@ async def ensure_user(discord_id, username="unknown"):
         row = await cursor.fetchone()
         if row:
             if username and dict(row)["username"] != username:
-                await db.execute(
-                    "UPDATE users SET username = ? WHERE discord_id = ?", (username, discord_id)
-                )
+                await db.execute("UPDATE users SET username = ? WHERE discord_id = ?", (username, discord_id))
                 await db.commit()
             cursor = await db.execute("SELECT * FROM users WHERE discord_id = ?", (discord_id,))
             return dict(await cursor.fetchone())
-        await db.execute(
-            "INSERT INTO users (discord_id, username) VALUES (?, ?)", (discord_id, username)
-        )
+        await db.execute("INSERT INTO users (discord_id, username) VALUES (?, ?)", (discord_id, username))
         await db.commit()
         cursor = await db.execute("SELECT * FROM users WHERE discord_id = ?", (discord_id,))
         return dict(await cursor.fetchone())
@@ -178,9 +183,7 @@ async def get_all_sellers():
 
 async def set_seller_status(discord_id, is_seller):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET is_seller = ? WHERE discord_id = ?", (1 if is_seller else 0, discord_id)
-        )
+        await db.execute("UPDATE users SET is_seller = ? WHERE discord_id = ?", (1 if is_seller else 0, discord_id))
         await db.commit()
 
 
@@ -192,17 +195,13 @@ async def set_balance(discord_id, amount):
 
 async def add_balance(discord_id, amount):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET balance = balance + ? WHERE discord_id = ?", (amount, discord_id)
-        )
+        await db.execute("UPDATE users SET balance = balance + ? WHERE discord_id = ?", (amount, discord_id))
         await db.commit()
 
 
 async def subtract_balance(discord_id, amount):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET balance = balance - ? WHERE discord_id = ?", (amount, discord_id)
-        )
+        await db.execute("UPDATE users SET balance = balance - ? WHERE discord_id = ?", (amount, discord_id))
         await db.commit()
 
 
@@ -243,9 +242,7 @@ async def get_product(product_id):
 async def get_product_by_name(name):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM products WHERE name = ? OR display_name = ?", (name, name)
-        )
+        cursor = await db.execute("SELECT * FROM products WHERE name = ? OR display_name = ?", (name, name))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -259,9 +256,7 @@ async def get_all_products():
 
 async def set_product_enabled(product_id, enabled):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE products SET enabled = ? WHERE id = ?", (1 if enabled else 0, product_id)
-        )
+        await db.execute("UPDATE products SET enabled = ? WHERE id = ?", (1 if enabled else 0, product_id))
         await db.commit()
 
 
@@ -272,10 +267,7 @@ async def set_product_enabled(product_id, enabled):
 async def add_variant(product_id, name, price, vtype):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        await db.execute(
-            "INSERT INTO variants (product_id, name, price, type) VALUES (?, ?, ?, ?)",
-            (product_id, name, price, vtype)
-        )
+        await db.execute("INSERT INTO variants (product_id, name, price, type) VALUES (?, ?, ?, ?)", (product_id, name, price, vtype))
         await db.commit()
         cursor = await db.execute("SELECT * FROM variants WHERE rowid = last_insert_rowid()")
         return dict(await cursor.fetchone())
@@ -302,9 +294,7 @@ async def get_variant(variant_id):
 async def get_variants_for_product(product_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM variants WHERE product_id = ? ORDER BY price ASC", (product_id,)
-        )
+        cursor = await db.execute("SELECT * FROM variants WHERE product_id = ? ORDER BY price ASC", (product_id,))
         return [dict(r) for r in await cursor.fetchall()]
 
 
@@ -342,9 +332,7 @@ async def set_variant_price(variant_id, price):
 
 async def set_variant_enabled(variant_id, enabled):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE variants SET enabled = ? WHERE id = ?", (1 if enabled else 0, variant_id)
-        )
+        await db.execute("UPDATE variants SET enabled = ? WHERE id = ?", (1 if enabled else 0, variant_id))
         await db.commit()
 
 
@@ -359,19 +347,13 @@ async def update_variant_api(variant_id, api_url, api_method, api_headers, api_b
 
 async def update_variant_balance_check(variant_id, balance_url, balance_path):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE variants SET api_balance_url=?, api_balance_path=? WHERE id=?",
-            (balance_url, balance_path, variant_id)
-        )
+        await db.execute("UPDATE variants SET api_balance_url=?, api_balance_path=? WHERE id=?", (balance_url, balance_path, variant_id))
         await db.commit()
 
 
 async def update_variant_aegis(variant_id, category, service):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE variants SET aegis_category=?, aegis_service=? WHERE id=?",
-            (category, service, variant_id)
-        )
+        await db.execute("UPDATE variants SET aegis_category=?, aegis_service=? WHERE id=?", (category, service, variant_id))
         await db.commit()
 
 
@@ -382,9 +364,7 @@ async def update_variant_aegis(variant_id, category, service):
 async def add_stock_keys(variant_id, keys):
     async with aiosqlite.connect(DB_PATH) as db:
         for key in keys:
-            await db.execute(
-                "INSERT INTO stock (variant_id, key_value) VALUES (?, ?)", (variant_id, key.strip())
-            )
+            await db.execute("INSERT INTO stock (variant_id, key_value) VALUES (?, ?)", (variant_id, key.strip()))
         await db.commit()
     return len(keys)
 
@@ -392,10 +372,7 @@ async def add_stock_keys(variant_id, keys):
 async def get_next_stock_key(variant_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM stock WHERE variant_id = ? AND is_used = 0 ORDER BY id ASC LIMIT 1",
-            (variant_id,)
-        )
+        cursor = await db.execute("SELECT * FROM stock WHERE variant_id = ? AND is_used = 0 ORDER BY id ASC LIMIT 1", (variant_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
@@ -408,9 +385,7 @@ async def mark_stock_used(stock_id):
 
 async def get_stock_count(variant_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT COUNT(*) FROM stock WHERE variant_id = ? AND is_used = 0", (variant_id,)
-        )
+        cursor = await db.execute("SELECT COUNT(*) FROM stock WHERE variant_id = ? AND is_used = 0", (variant_id,))
         row = await cursor.fetchone()
         return row[0] if row else 0
 
@@ -436,10 +411,7 @@ async def get_all_stock_counts():
 async def record_key(variant_id, key_value, generated_by):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        await db.execute(
-            "INSERT INTO keys (variant_id, key_value, generated_by) VALUES (?, ?, ?)",
-            (variant_id, key_value, generated_by)
-        )
+        await db.execute("INSERT INTO keys (variant_id, key_value, generated_by) VALUES (?, ?, ?)", (variant_id, key_value, generated_by))
         await db.commit()
         cursor = await db.execute("SELECT * FROM keys WHERE rowid = last_insert_rowid()")
         return dict(await cursor.fetchone())
@@ -464,9 +436,7 @@ async def get_key_by_id(key_id):
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
             SELECT k.*, v.name as variant_name, p.display_name as product_name
-            FROM keys k
-            JOIN variants v ON k.variant_id = v.id
-            JOIN products p ON v.product_id = p.id
+            FROM keys k JOIN variants v ON k.variant_id = v.id JOIN products p ON v.product_id = p.id
             WHERE k.id = ?
         """, (key_id,))
         row = await cursor.fetchone()
@@ -478,9 +448,7 @@ async def get_key_by_value(key_value):
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
             SELECT k.*, v.name as variant_name, p.display_name as product_name
-            FROM keys k
-            JOIN variants v ON k.variant_id = v.id
-            JOIN products p ON v.product_id = p.id
+            FROM keys k JOIN variants v ON k.variant_id = v.id JOIN products p ON v.product_id = p.id
             WHERE k.key_value = ?
         """, (key_value,))
         row = await cursor.fetchone()
@@ -512,4 +480,5 @@ async def clear_all_keys():
         await db.execute("DELETE FROM keys")
         await db.commit()
         return count
+
 
