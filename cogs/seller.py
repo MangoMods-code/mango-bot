@@ -147,32 +147,23 @@ class Seller(commands.Cog):
                 embed=pages[0], view=PaginatorView(pages, interaction.user.id), ephemeral=True
             )
 
-    # ── BUYER GROUPS ──────────────────────────────────────────────────────────
+    # ── BUYER GROUPS ─────────────────────────────────────────────────────────
 
     @app_commands.command(name="buyergroups", description="View buyer group links for your customers")
     async def buyergroups(self, interaction: discord.Interaction):
         if requires_dm(interaction):
             return await interaction.response.send_message(embed=dm_only_error(), ephemeral=True)
-
-        # Only sellers (and the owner) should see this
         user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
         if not user["is_seller"] and not is_owner(interaction):
             return await interaction.response.send_message(
                 embed=error_embed("🔒 You don't have seller permissions."), ephemeral=True
             )
-
         groups = await db.get_all_buyer_groups()
-
         if not groups:
             return await interaction.response.send_message(
-                embed=mango_embed(
-                    "📲  Buyer Groups",
-                    "No buyer groups have been set up yet.\n\n"
-                    "The owner can add them with `/setbuyergroup`."
-                ),
+                embed=mango_embed("📲  Buyer Groups", "No buyer groups set up yet."),
                 ephemeral=True,
             )
-
         description = (
             f"⛔  **SELLER EYES ONLY — DO NOT SHARE THESE LINKS**\n"
             f"These links are for **your** buyer groups that you set up.\n"
@@ -180,23 +171,16 @@ class Seller(commands.Cog):
             f"You must create your own buyer group/tutorial for them.\n"
             f"{DIVIDER}\n\n"
         )
-
         for g in groups:
             description += f"**{g['name']}**\n> {g['link']}\n\n"
-
-        description += (
-            f"{DIVIDER}\n"
-            f"⛔  **DO NOT SHARE — SELLER ONLY**"
-        )
-
+        description += f"{DIVIDER}\n⛔  **DO NOT SHARE — SELLER ONLY**"
         embed = discord.Embed(
             title="📲  Buyer Groups",
             description=description,
-            color=discord.Colour.from_str("#FF3B3B"),  # Red to reinforce the warning
+            color=discord.Colour.from_str("#FF3B3B"),
         )
         embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
         embed.timestamp = discord.utils.utcnow()
-
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── GENERATE KEY ─────────────────────────────────────────────────────────
@@ -281,6 +265,7 @@ class Seller(commands.Cog):
                 generated_keys = data.get("keys", [])
                 if not generated_keys:
                     return await interaction.followup.send(embed=error_embed("Aegis returned no keys. Contact the owner."))
+                # Store for logs only — not shown to sellers
                 api_balance_before = data.get("balance_before")
                 api_balance_after  = data.get("balance_after")
                 for key_value in generated_keys:
@@ -340,6 +325,7 @@ class Seller(commands.Cog):
             if generated_keys:
                 api_balance_after = await fetch_generic_api_balance(var)
 
+        # ── DELIVERY ─────────────────────────────────────────────────────────
         updated_user = await db.get_user(str(interaction.user.id))
         actual_cost = var["price"] * len(generated_keys)
 
@@ -354,21 +340,18 @@ class Seller(commands.Cog):
             else f"💰 Remaining balance: **{updated_user['balance']}**"
         )
 
-        api_balance_line = ""
-        if api_balance_before is not None or api_balance_after is not None:
-            before = api_balance_before if api_balance_before is not None else "N/A"
-            after  = api_balance_after  if api_balance_after  is not None else "N/A"
-            api_balance_line = f"\n🌐 Aegis balance: **{before}** → **{after}**"
-
+        # Aegis balance intentionally NOT shown to sellers — logs only
         embed = mango_embed(
             "🔑  Your Generated Keys",
-            f"**{label}** — {len(generated_keys)} key(s)\n{DIVIDER}\n{keys_display}\n{balance_line}{api_balance_line}"
+            f"**{label}** — {len(generated_keys)} key(s)\n{DIVIDER}\n{keys_display}\n{balance_line}"
         )
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed)
 
+        # ── RECEIPT (sellers only, no Aegis balance) ──────────────────────────
         if not owner_mode:
-            receipt_desc = (
+            receipt = mango_embed(
+                "🧾  Receipt",
                 f"**{label}**\n{DIVIDER_SHORT}\n\n"
                 f"Keys generated: **{len(generated_keys)}**\n"
                 f"Price per key: **{var['price']}** bal\n"
@@ -376,20 +359,13 @@ class Seller(commands.Cog):
                 f"Balance before: **{balance_before}**\n"
                 f"Balance after: **{updated_user['balance']}**"
             )
-            if api_balance_before is not None or api_balance_after is not None:
-                receipt_desc += (
-                    f"\n\n{DIVIDER_SHORT}\n"
-                    f"🌐 **Aegis Balance**\n"
-                    f"Before: **{api_balance_before if api_balance_before is not None else 'N/A'}**\n"
-                    f"After:  **{api_balance_after  if api_balance_after  is not None else 'N/A'}**"
-                )
-            receipt = mango_embed("🧾  Receipt", receipt_desc)
             await interaction.followup.send(
                 embed=receipt,
                 view=DismissView(interaction.user.id),
                 ephemeral=interaction.guild is not None,
             )
 
+        # ── LOG (Aegis balance visible to you in the log channel) ─────────────
         await send_log(self.bot, log_keygen(
             user=interaction.user,
             variant_label=label,
@@ -453,4 +429,5 @@ class Seller(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Seller(bot))
+
 
