@@ -122,25 +122,23 @@ async def init_db():
                 value TEXT NOT NULL
             )
         """)
-
-        # SMB social media panel services
-        # Each row is one service Nick has manually added (platform > category > service)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS smb_services (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform     TEXT NOT NULL,
-                category     TEXT NOT NULL,
-                service_id   INTEGER NOT NULL UNIQUE,
-                name         TEXT NOT NULL,
-                min_qty      INTEGER NOT NULL DEFAULT 1,
-                max_qty      INTEGER NOT NULL DEFAULT 10000,
-                rate         TEXT NOT NULL DEFAULT '0.00',
-                enabled      INTEGER NOT NULL DEFAULT 1,
-                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform   TEXT NOT NULL,
+                category   TEXT NOT NULL,
+                service_id INTEGER NOT NULL UNIQUE,
+                name       TEXT NOT NULL,
+                min_qty    INTEGER NOT NULL DEFAULT 1,
+                max_qty    INTEGER NOT NULL DEFAULT 10000,
+                rate       TEXT NOT NULL DEFAULT '0.00',
+                link_hint  TEXT NOT NULL DEFAULT '',
+                enabled    INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
 
-        # Column migrations
+        # Column migrations — add to both variants and smb_services as needed
         for col, definition in [
             ("api_balance_url",  "TEXT"),
             ("api_balance_path", "TEXT DEFAULT 'balance'"),
@@ -149,6 +147,15 @@ async def init_db():
         ]:
             try:
                 await db.execute(f"ALTER TABLE variants ADD COLUMN {col} {definition}")
+            except Exception:
+                pass
+
+        # smb_services migrations
+        for col, definition in [
+            ("link_hint", "TEXT NOT NULL DEFAULT ''"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE smb_services ADD COLUMN {col} {definition}")
             except Exception:
                 pass
 
@@ -259,7 +266,7 @@ async def reset_balance(discord_id):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PRODUCT / VARIANT / STOCK / KEY HELPERS (unchanged)
+# PRODUCT / VARIANT / STOCK / KEY HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def add_product(display_name):
@@ -487,27 +494,27 @@ async def clear_all_keys():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def smb_add_service(platform: str, category: str, service_id: int,
-                          name: str, min_qty: int, max_qty: int, rate: str):
+                          name: str, min_qty: int, max_qty: int, rate: str,
+                          link_hint: str = ""):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("""
-            INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate, link_hint)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(service_id) DO UPDATE SET
                 platform=excluded.platform, category=excluded.category,
                 name=excluded.name, min_qty=excluded.min_qty,
-                max_qty=excluded.max_qty, rate=excluded.rate
-        """, (platform, category, service_id, name, min_qty, max_qty, rate))
+                max_qty=excluded.max_qty, rate=excluded.rate,
+                link_hint=excluded.link_hint
+        """, (platform, category, service_id, name, min_qty, max_qty, rate, link_hint))
         await db.commit()
         cursor = await db.execute("SELECT * FROM smb_services WHERE service_id = ?", (service_id,))
         return dict(await cursor.fetchone())
-
 
 async def smb_remove_service(service_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM smb_services WHERE service_id = ?", (service_id,))
         await db.commit()
-
 
 async def smb_get_service(service_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -516,9 +523,7 @@ async def smb_get_service(service_id: int):
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-
 async def smb_get_platforms() -> list[str]:
-    """Return a distinct sorted list of all configured platforms."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT DISTINCT platform FROM smb_services WHERE enabled = 1 ORDER BY platform"
@@ -526,9 +531,7 @@ async def smb_get_platforms() -> list[str]:
         rows = await cursor.fetchall()
     return [r[0] for r in rows]
 
-
 async def smb_get_categories(platform: str) -> list[str]:
-    """Return distinct categories for a given platform."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "SELECT DISTINCT category FROM smb_services WHERE platform = ? AND enabled = 1 ORDER BY category",
@@ -537,9 +540,7 @@ async def smb_get_categories(platform: str) -> list[str]:
         rows = await cursor.fetchall()
     return [r[0] for r in rows]
 
-
 async def smb_get_services(platform: str, category: str) -> list[dict]:
-    """Return all enabled services for a platform + category."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
@@ -548,15 +549,11 @@ async def smb_get_services(platform: str, category: str) -> list[dict]:
         )
         return [dict(r) for r in await cursor.fetchall()]
 
-
 async def smb_get_all_services() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM smb_services ORDER BY platform, category, name"
-        )
+        cursor = await db.execute("SELECT * FROM smb_services ORDER BY platform, category, name")
         return [dict(r) for r in await cursor.fetchall()]
-
 
 async def smb_set_enabled(service_id: int, enabled: bool):
     async with aiosqlite.connect(DB_PATH) as db:
