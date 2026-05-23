@@ -240,7 +240,7 @@ class OrderDetailView(discord.ui.View):
 
 class OrderModal(discord.ui.Modal):
     def __init__(self, service: dict, owner_mode: bool = False):
-        super().__init__(title=f"Order — {service['name'][:40]}")
+        super().__init__(title=f"Order — {service['name'][:35]}")
         self.service = service
         self.owner_mode = owner_mode
 
@@ -485,6 +485,7 @@ class Socials(commands.Cog):
 async def setup(bot):
     # Global — no guild restriction so it appears in DMs for sellers
     await bot.add_cog(Socials(bot))
+
 
 
 
