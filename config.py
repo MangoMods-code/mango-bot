@@ -24,12 +24,15 @@ EMBED_COLOR    = _get("EMBED_COLOR", "FF8C00")
 BOT_NAME       = _get("BOT_NAME", "Mango Bot")
 BOT_FOOTER     = _get("BOT_FOOTER", "Mango Bot • Key Reseller")
 
-# Aegis API credentials — set these once in Railway, used for all Aegis variants.
+# Aegis API credentials
 AEGIS_API_KEY    = _get("AEGIS_API_KEY")
 AEGIS_API_SECRET = _get("AEGIS_API_SECRET")
 AEGIS_BASE_URL   = _get("AEGIS_BASE_URL", "https://clientarea.aegisonline.site")
 
-# Database path — on Railway this should point to a volume mount (e.g. /data).
+# SMBPanel API key — set this in Railway env vars
+SMB_API_KEY = _get("SMB_API_KEY")
+
+# Database path
 DATA_DIR = _get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 DB_PATH  = os.path.join(DATA_DIR, "bot.db")
 os.makedirs(DATA_DIR, exist_ok=True)
