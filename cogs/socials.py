@@ -1,5 +1,5 @@
 # cogs/socials.py — Interactive social media order panel.
-# owner_mode is threaded through every view so buyers never see your costs.
+# Global command — works in DMs and server. Sellers + owner only.
 
 import discord
 from discord import app_commands
@@ -40,18 +40,18 @@ def smb_maintenance_embed():
     return embed
 
 
+def no_access_embed():
+    return error_embed("🔒 You need **seller permissions** to use this command.\n\nContact the owner to get access.")
+
+
 def price_display(service: dict, owner_mode: bool) -> str:
-    """Return the correct price string based on who's viewing."""
     if owner_mode:
         return f"${service['rate']} per 1,000 *(your cost)*"
     buyer_rate = (service.get("buyer_rate") or "").strip()
-    if buyer_rate:
-        return f"${buyer_rate} per 1,000"
-    return "Contact for pricing"
+    return f"${buyer_rate} per 1,000" if buyer_rate else "Contact for pricing"
 
 
 def service_dropdown_desc(service: dict, owner_mode: bool) -> str:
-    """Short description shown in the service dropdown."""
     if owner_mode:
         return f"${service['rate']}/1k  •  Min: {service['min_qty']}  •  Max: {service['max_qty']}"
     buyer_rate = (service.get("buyer_rate") or "").strip()
@@ -245,12 +245,9 @@ class OrderModal(discord.ui.Modal):
         self.owner_mode = owner_mode
 
         link_hint = (service.get("link_hint") or "").strip()
-        link_label = link_hint[:45] if link_hint else "Link / URL"
-        link_placeholder = f"e.g. {link_hint}" if link_hint else "Paste the full URL here"
-
         self.link_input = discord.ui.TextInput(
-            label=link_label,
-            placeholder=link_placeholder[:100],
+            label=(link_hint[:45] if link_hint else "Link / URL"),
+            placeholder=(f"e.g. {link_hint}" if link_hint else "Paste the full URL here")[:100],
             style=discord.TextStyle.short,
             required=True,
             max_length=500,
@@ -279,20 +276,14 @@ class OrderModal(discord.ui.Modal):
 
         link = self.link_input.value.strip()
 
-        # Cost shown to owner uses real rate; buyers see buyer_rate if set
         if self.owner_mode:
             estimated_cost = (quantity / 1000) * float(s["rate"])
             cost_display = f"~${estimated_cost:.5f} *(your cost)*"
         else:
             buyer_rate = (s.get("buyer_rate") or "").strip()
-            if buyer_rate:
-                estimated_cost = (quantity / 1000) * float(buyer_rate)
-                cost_display = f"~${estimated_cost:.5f}"
-            else:
-                estimated_cost = (quantity / 1000) * float(s["rate"])
-                cost_display = "Contact for pricing"
+            estimated_cost = (quantity / 1000) * float(buyer_rate if buyer_rate else s["rate"])
+            cost_display = f"~${estimated_cost:.5f}" if buyer_rate else "Contact for pricing"
 
-        # Balance — only shown to owner
         balance_before_str = None
         balance_after_str = None
         if self.owner_mode:
@@ -316,9 +307,8 @@ class OrderModal(discord.ui.Modal):
             desc += f"\n**Your SMB balance:** {balance_before_str}\n**After order:** {balance_after_str}\n"
         desc += "\nConfirm or cancel below."
 
-        embed = make_embed("📋  Order Preview", desc)
         view = ConfirmOrderView(interaction.user, s, link, quantity, estimated_cost, self.owner_mode, balance_before_str)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=make_embed("📋  Order Preview", desc), view=view, ephemeral=True)
 
 
 # ── STEP 6: Confirm ──────────────────────────────────────────────────────────
@@ -346,8 +336,6 @@ class ConfirmOrderView(discord.ui.View):
             return await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed(f"Order failed:\n{e}"), view=None)
 
         order_id = result.get("order", "?")
-
-        # Fetch updated SMB balance
         smb_balance_after = None
         new_balance_str = None
         try:
@@ -357,7 +345,6 @@ class ConfirmOrderView(discord.ui.View):
         except Exception:
             pass
 
-        # Confirmation embed — balance only shown to owner
         desc = (
             f"**{self.service['name']}**\n{DIVIDER}\n\n"
             f"**Order ID:** `{order_id}`\n"
@@ -371,14 +358,11 @@ class ConfirmOrderView(discord.ui.View):
 
         embed = discord.Embed(title="✅  Order Placed", description=desc, color=discord.Colour.green())
         embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
-
         order_id_int = int(order_id) if str(order_id).isdigit() else 0
         await interaction.followup.edit_message(
             message_id=interaction.message.id, embed=embed,
             view=OrderStatusView(self.user.id, order_id_int)
         )
-
-        # ── LOG TO CHANNEL ────────────────────────────────────────────────────
         await send_log(
             interaction.client,
             log_smb_order(
@@ -471,13 +455,17 @@ class Socials(commands.Cog):
     @app_commands.command(name="socials", description="Open the social media order panel")
     async def socials(self, interaction: discord.Interaction):
         owner_mode = is_owner(interaction)
-        smb_maint = (await db.get_setting("smb_maintenance", "0")) == "1"
 
+        # Check SMB maintenance — blocks everyone except owner
+        smb_maint = (await db.get_setting("smb_maintenance", "0")) == "1"
+        if smb_maint and not owner_mode:
+            return await interaction.response.send_message(embed=smb_maintenance_embed(), ephemeral=True)
+
+        # Must be seller or owner
         if not owner_mode:
-            if smb_maint:
-                return await interaction.response.send_message(embed=smb_maintenance_embed(), ephemeral=True)
-            # Future: add seller/buyer check here when opening to more users
-            return await interaction.response.send_message(embed=error_embed("🔒 Only the bot owner can use this command."), ephemeral=True)
+            user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
+            if not user["is_seller"]:
+                return await interaction.response.send_message(embed=no_access_embed(), ephemeral=True)
 
         platforms = await db.smb_get_platforms()
         if not platforms:
@@ -495,7 +483,8 @@ class Socials(commands.Cog):
 
 
 async def setup(bot):
-    guild = discord.Object(id=int(cfg.GUILD_ID))
-    await bot.add_cog(Socials(bot), guild=guild)
+    # Global — no guild restriction so it appears in DMs for sellers
+    await bot.add_cog(Socials(bot))
+
 
 
