@@ -5,7 +5,6 @@ from discord.ui import View, Button
 import config as cfg
 
 EMBED_COLOR = discord.Colour(int(cfg.EMBED_COLOR, 16))
-
 DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 DIVIDER_SHORT = "━━━━━━━━━━━━━━━━"
 ITEMS_PER_PAGE = 8
@@ -14,14 +13,10 @@ ITEMS_PER_PAGE = 8
 def is_owner(interaction: discord.Interaction) -> bool:
     return str(interaction.user.id) == str(cfg.OWNER_ID)
 
-
 def requires_dm(interaction: discord.Interaction) -> bool:
     if not interaction.guild:
         return False
-    if is_owner(interaction):
-        return False
-    return True
-
+    return not is_owner(interaction)
 
 def mango_embed(title="", description=""):
     embed = discord.Embed(title=title, description=description, color=EMBED_COLOR)
@@ -29,13 +24,11 @@ def mango_embed(title="", description=""):
     embed.timestamp = discord.utils.utcnow()
     return embed
 
-
 def error_embed(message):
     embed = discord.Embed(title="❌  Error", description=message, color=discord.Colour.from_str("#FF3B3B"))
     embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
     embed.timestamp = discord.utils.utcnow()
     return embed
-
 
 def success_embed(message):
     embed = discord.Embed(title="✅  Success", description=message, color=discord.Colour.from_str("#2ECC71"))
@@ -43,14 +36,11 @@ def success_embed(message):
     embed.timestamp = discord.utils.utcnow()
     return embed
 
-
 def dm_only_error():
     return error_embed("This command only works in **DMs**.\n\nSend me a direct message and try again!")
 
-
 def server_only_error():
     return error_embed("This command only works **in the server**.")
-
 
 def maintenance_embed():
     embed = discord.Embed(
@@ -68,7 +58,6 @@ def maintenance_embed():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def send_log(bot, embed):
-    """Send a log embed to the configured log channel. Fails silently."""
     try:
         channel_id = cfg.LOG_CHANNEL_ID
         if not channel_id or not str(channel_id).isdigit():
@@ -85,43 +74,51 @@ async def send_log(bot, embed):
 def log_keygen(user, variant_label, count, price_each, total_cost,
                balance_before, balance_after, keys, owner_mode,
                api_balance_before=None, api_balance_after=None):
-    """
-    Build a log embed for a key generation event.
-    api_balance_before / api_balance_after are the external reseller panel balance
-    fetched before and after generation — shown when this is an API product.
-    """
     keys_preview = ", ".join(f"`{k[:12]}…`" if len(k) > 12 else f"`{k}`" for k in keys[:5])
     if len(keys) > 5:
         keys_preview += f" *+{len(keys) - 5} more*"
-
-    embed = discord.Embed(
-        title="🔑  Key Generated",
-        color=discord.Colour.from_str("#FF8C00"),
-        timestamp=discord.utils.utcnow(),
-    )
+    embed = discord.Embed(title="🔑  Key Generated", color=discord.Colour.from_str("#FF8C00"), timestamp=discord.utils.utcnow())
     embed.add_field(name="Seller", value=f"{user.mention} (`{user.name}`)", inline=True)
     embed.add_field(name="Product", value=variant_label, inline=True)
     embed.add_field(name="Keys", value=str(count), inline=True)
-
     if owner_mode:
         embed.add_field(name="Internal Cost", value="*Owner — free*", inline=True)
         embed.add_field(name="Internal Balance", value="N/A", inline=True)
     else:
         embed.add_field(name="Internal Cost", value=f"{price_each} × {count} = **{total_cost}**", inline=True)
         embed.add_field(name="Internal Balance", value=f"{balance_before} → **{balance_after}**", inline=True)
-
-    # External API balance section — only shown for API-type keys
     if api_balance_before is not None or api_balance_after is not None:
         before_str = str(api_balance_before) if api_balance_before is not None else "N/A"
         after_str = str(api_balance_after) if api_balance_after is not None else "N/A"
-        embed.add_field(
-            name="🌐 API Balance (External)",
-            value=f"{before_str} → **{after_str}**",
-            inline=False,
-        )
-
+        embed.add_field(name="🌐 API Balance (External)", value=f"{before_str} → **{after_str}**", inline=False)
     embed.add_field(name="Keys Preview", value=keys_preview, inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=f"User ID: {user.id}")
+    return embed
+
+
+def log_smb_order(user, service_name, platform, link, quantity,
+                  order_id, estimated_cost, smb_balance_before, smb_balance_after):
+    """Log a social media panel order to the log channel."""
+    embed = discord.Embed(
+        title="📱  Socials Order Placed",
+        color=discord.Colour.from_str("#1DA1F2"),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Ordered by", value=f"{user.mention} (`{user.name}`)", inline=True)
+    embed.add_field(name="Platform", value=platform, inline=True)
+    embed.add_field(name="Service", value=service_name, inline=True)
+    embed.add_field(name="Order ID", value=f"`{order_id}`", inline=True)
+    embed.add_field(name="Quantity", value=f"{quantity:,}", inline=True)
+    embed.add_field(name="Est. Cost", value=f"${estimated_cost:.5f}", inline=True)
+    embed.add_field(name="Link", value=link, inline=False)
+    # Always show your SMB balance in the log — this is private to the log channel
+    if smb_balance_before or smb_balance_after:
+        embed.add_field(
+            name="💳 SMB Balance",
+            value=f"{smb_balance_before or 'N/A'} → **{smb_balance_after or 'N/A'}**",
+            inline=False,
+        )
     embed.set_footer(text=f"User ID: {user.id}")
     return embed
 
@@ -136,7 +133,6 @@ def log_balance_change(admin, target, action, amount, new_balance):
     embed.set_footer(text=f"Target ID: {target.id}")
     return embed
 
-
 def log_seller_change(admin, target, granted):
     embed = discord.Embed(title="🏷️  Seller Updated", color=discord.Colour.from_str("#9B59B6"), timestamp=discord.utils.utcnow())
     embed.add_field(name="Admin", value=f"{admin.mention}", inline=True)
@@ -144,7 +140,6 @@ def log_seller_change(admin, target, granted):
     embed.add_field(name="Action", value="**Granted** ✅" if granted else "**Revoked** ❌", inline=True)
     embed.set_footer(text=f"Target ID: {target.id}")
     return embed
-
 
 def log_maintenance(admin, enabled):
     embed = discord.Embed(
@@ -157,25 +152,14 @@ def log_maintenance(admin, enabled):
     embed.set_footer(text=f"Admin ID: {admin.id}")
     return embed
 
-
 def log_clear_keys(admin, count):
-    embed = discord.Embed(
-        title="🗑️  Key History Cleared",
-        description=f"**{count}** key record(s) deleted.",
-        color=discord.Colour.from_str("#E74C3C"),
-        timestamp=discord.utils.utcnow(),
-    )
+    embed = discord.Embed(title="🗑️  Key History Cleared", description=f"**{count}** key record(s) deleted.", color=discord.Colour.from_str("#E74C3C"), timestamp=discord.utils.utcnow())
     embed.add_field(name="Admin", value=f"{admin.mention}", inline=True)
     embed.set_footer(text=f"Admin ID: {admin.id}")
     return embed
 
-
 def log_announce(admin, message, sent, failed):
-    embed = discord.Embed(
-        title="📢  Announcement Sent",
-        color=discord.Colour.from_str("#1ABC9C"),
-        timestamp=discord.utils.utcnow(),
-    )
+    embed = discord.Embed(title="📢  Announcement Sent", color=discord.Colour.from_str("#1ABC9C"), timestamp=discord.utils.utcnow())
     embed.add_field(name="Admin", value=f"{admin.mention}", inline=True)
     embed.add_field(name="Delivered", value=f"✅ {sent}", inline=True)
     embed.add_field(name="Failed", value=f"❌ {failed}", inline=True)
@@ -242,4 +226,5 @@ class DismissView(View):
 
 def paginate_items(items, per_page=ITEMS_PER_PAGE):
     return [items[i:i + per_page] for i in range(0, len(items), per_page)]
+
 
