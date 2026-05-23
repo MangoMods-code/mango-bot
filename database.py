@@ -52,43 +52,26 @@ async def init_db():
             )
         """)
 
-        # Migrate variants table if it has an old CHECK constraint
-        cursor = await db.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='variants'"
-        )
+        cursor = await db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='variants'")
         row = await cursor.fetchone()
         if row and "CHECK" in (row[0] or ""):
             await db.execute("""
                 CREATE TABLE variants_new (
-                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    product_id       INTEGER NOT NULL,
-                    name             TEXT NOT NULL,
-                    price            INTEGER NOT NULL DEFAULT 1,
-                    type             TEXT NOT NULL DEFAULT 'stock',
-                    api_url          TEXT,
-                    api_method       TEXT DEFAULT 'GET',
-                    api_headers      TEXT DEFAULT '{}',
-                    api_body         TEXT DEFAULT '{}',
-                    api_key_path     TEXT DEFAULT 'key',
-                    api_balance_url  TEXT,
-                    api_balance_path TEXT DEFAULT 'balance',
-                    aegis_category   INTEGER,
-                    aegis_service    INTEGER,
-                    enabled          INTEGER NOT NULL DEFAULT 1,
-                    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL,
+                    name TEXT NOT NULL, price INTEGER NOT NULL DEFAULT 1, type TEXT NOT NULL DEFAULT 'stock',
+                    api_url TEXT, api_method TEXT DEFAULT 'GET', api_headers TEXT DEFAULT '{}',
+                    api_body TEXT DEFAULT '{}', api_key_path TEXT DEFAULT 'key',
+                    api_balance_url TEXT, api_balance_path TEXT DEFAULT 'balance',
+                    aegis_category INTEGER, aegis_service INTEGER, enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
                 )
             """)
             await db.execute("""
-                INSERT INTO variants_new (
-                    id, product_id, name, price, type,
-                    api_url, api_method, api_headers, api_body, api_key_path,
-                    enabled, created_at
-                )
-                SELECT id, product_id, name, price, type,
-                    api_url, api_method, api_headers, api_body, api_key_path,
-                    enabled, created_at
-                FROM variants
+                INSERT INTO variants_new (id, product_id, name, price, type, api_url, api_method,
+                    api_headers, api_body, api_key_path, enabled, created_at)
+                SELECT id, product_id, name, price, type, api_url, api_method,
+                    api_headers, api_body, api_key_path, enabled, created_at FROM variants
             """)
             await db.execute("DROP TABLE variants")
             await db.execute("ALTER TABLE variants_new RENAME TO variants")
@@ -96,30 +79,24 @@ async def init_db():
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS stock (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                variant_id INTEGER NOT NULL,
-                key_value  TEXT NOT NULL,
-                is_used    INTEGER NOT NULL DEFAULT 0,
-                added_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                id INTEGER PRIMARY KEY AUTOINCREMENT, variant_id INTEGER NOT NULL,
+                key_value TEXT NOT NULL, is_used INTEGER NOT NULL DEFAULT 0,
+                added_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (variant_id) REFERENCES variants(id) ON DELETE CASCADE
             )
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS keys (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                variant_id   INTEGER NOT NULL,
-                key_value    TEXT NOT NULL,
-                generated_by TEXT NOT NULL,
-                generated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                is_banned    INTEGER NOT NULL DEFAULT 0,
+                id INTEGER PRIMARY KEY AUTOINCREMENT, variant_id INTEGER NOT NULL,
+                key_value TEXT NOT NULL, generated_by TEXT NOT NULL,
+                generated_at TEXT NOT NULL DEFAULT (datetime('now')), is_banned INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (variant_id) REFERENCES variants(id) ON DELETE CASCADE,
                 FOREIGN KEY (generated_by) REFERENCES users(discord_id)
             )
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
             )
         """)
         await db.execute("""
@@ -132,13 +109,14 @@ async def init_db():
                 min_qty    INTEGER NOT NULL DEFAULT 1,
                 max_qty    INTEGER NOT NULL DEFAULT 10000,
                 rate       TEXT NOT NULL DEFAULT '0.00',
+                buyer_rate TEXT NOT NULL DEFAULT '',
                 link_hint  TEXT NOT NULL DEFAULT '',
                 enabled    INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
 
-        # Column migrations — add to both variants and smb_services as needed
+        # Column migrations
         for col, definition in [
             ("api_balance_url",  "TEXT"),
             ("api_balance_path", "TEXT DEFAULT 'balance'"),
@@ -150,9 +128,9 @@ async def init_db():
             except Exception:
                 pass
 
-        # smb_services migrations
         for col, definition in [
-            ("link_hint", "TEXT NOT NULL DEFAULT ''"),
+            ("link_hint",  "TEXT NOT NULL DEFAULT ''"),
+            ("buyer_rate", "TEXT NOT NULL DEFAULT ''"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE smb_services ADD COLUMN {col} {definition}")
@@ -175,10 +153,7 @@ async def get_setting(key, default="0"):
 
 async def set_setting(key, value):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
-            (key, value, value)
-        )
+        await db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?", (key, value, value))
         await db.commit()
 
 async def is_maintenance():
@@ -189,15 +164,9 @@ async def set_maintenance(enabled):
 
 async def get_all_buyer_groups():
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT key, value FROM settings WHERE key LIKE 'buyergroup_%' AND value != '' ORDER BY key"
-        )
+        cursor = await db.execute("SELECT key, value FROM settings WHERE key LIKE 'buyergroup_%' AND value != '' ORDER BY key")
         rows = await cursor.fetchall()
-    groups = []
-    for key, value in rows:
-        raw_name = key[len("buyergroup_"):]
-        groups.append({"name": raw_name.title(), "link": value})
-    return groups
+    return [{"name": k[len("buyergroup_"):].title(), "link": v} for k, v in rows]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -325,9 +294,8 @@ async def get_variant(variant_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
-            SELECT v.*, p.display_name as product_name
-            FROM variants v JOIN products p ON v.product_id = p.id
-            WHERE v.id = ?
+            SELECT v.*, p.display_name as product_name FROM variants v
+            JOIN products p ON v.product_id = p.id WHERE v.id = ?
         """, (variant_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
@@ -342,10 +310,9 @@ async def get_all_enabled_variants():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
-            SELECT v.*, p.display_name as product_name
-            FROM variants v JOIN products p ON v.product_id = p.id
-            WHERE v.enabled = 1 AND p.enabled = 1
-            ORDER BY p.display_name, v.price ASC
+            SELECT v.*, p.display_name as product_name FROM variants v
+            JOIN products p ON v.product_id = p.id
+            WHERE v.enabled = 1 AND p.enabled = 1 ORDER BY p.display_name, v.price ASC
         """)
         return [dict(r) for r in await cursor.fetchall()]
 
@@ -353,8 +320,8 @@ async def get_all_api_variants():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
-            SELECT v.*, p.display_name as product_name
-            FROM variants v JOIN products p ON v.product_id = p.id
+            SELECT v.*, p.display_name as product_name FROM variants v
+            JOIN products p ON v.product_id = p.id
             WHERE v.type = 'api' AND v.api_balance_url IS NOT NULL AND v.api_balance_url != ''
             ORDER BY p.display_name, v.name
         """)
@@ -372,10 +339,8 @@ async def set_variant_enabled(variant_id, enabled):
 
 async def update_variant_api(variant_id, api_url, api_method, api_headers, api_body, api_key_path):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE variants SET api_url=?, api_method=?, api_headers=?, api_body=?, api_key_path=? WHERE id=?",
-            (api_url, api_method, api_headers, api_body, api_key_path, variant_id)
-        )
+        await db.execute("UPDATE variants SET api_url=?, api_method=?, api_headers=?, api_body=?, api_key_path=? WHERE id=?",
+                         (api_url, api_method, api_headers, api_body, api_key_path, variant_id))
         await db.commit()
 
 async def update_variant_balance_check(variant_id, balance_url, balance_path):
@@ -493,72 +458,60 @@ async def clear_all_keys():
 # SMB SERVICES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def smb_add_service(platform: str, category: str, service_id: int,
-                          name: str, min_qty: int, max_qty: int, rate: str,
-                          link_hint: str = ""):
+async def smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate, link_hint="", buyer_rate=""):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("""
-            INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate, link_hint)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate, link_hint, buyer_rate)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(service_id) DO UPDATE SET
-                platform=excluded.platform, category=excluded.category,
-                name=excluded.name, min_qty=excluded.min_qty,
-                max_qty=excluded.max_qty, rate=excluded.rate,
-                link_hint=excluded.link_hint
-        """, (platform, category, service_id, name, min_qty, max_qty, rate, link_hint))
+                platform=excluded.platform, category=excluded.category, name=excluded.name,
+                min_qty=excluded.min_qty, max_qty=excluded.max_qty, rate=excluded.rate,
+                link_hint=excluded.link_hint, buyer_rate=excluded.buyer_rate
+        """, (platform, category, service_id, name, min_qty, max_qty, rate, link_hint, buyer_rate))
         await db.commit()
         cursor = await db.execute("SELECT * FROM smb_services WHERE service_id = ?", (service_id,))
         return dict(await cursor.fetchone())
 
-async def smb_remove_service(service_id: int):
+async def smb_remove_service(service_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM smb_services WHERE service_id = ?", (service_id,))
         await db.commit()
 
-async def smb_get_service(service_id: int):
+async def smb_get_service(service_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM smb_services WHERE service_id = ?", (service_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-async def smb_get_platforms() -> list[str]:
+async def smb_get_platforms():
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT DISTINCT platform FROM smb_services WHERE enabled = 1 ORDER BY platform"
-        )
-        rows = await cursor.fetchall()
-    return [r[0] for r in rows]
+        cursor = await db.execute("SELECT DISTINCT platform FROM smb_services WHERE enabled = 1 ORDER BY platform")
+        return [r[0] for r in await cursor.fetchall()]
 
-async def smb_get_categories(platform: str) -> list[str]:
+async def smb_get_categories(platform):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT DISTINCT category FROM smb_services WHERE platform = ? AND enabled = 1 ORDER BY category",
-            (platform,)
-        )
-        rows = await cursor.fetchall()
-    return [r[0] for r in rows]
+        cursor = await db.execute("SELECT DISTINCT category FROM smb_services WHERE platform = ? AND enabled = 1 ORDER BY category", (platform,))
+        return [r[0] for r in await cursor.fetchall()]
 
-async def smb_get_services(platform: str, category: str) -> list[dict]:
+async def smb_get_services(platform, category):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT * FROM smb_services WHERE platform = ? AND category = ? AND enabled = 1 ORDER BY name",
-            (platform, category)
-        )
+        cursor = await db.execute("SELECT * FROM smb_services WHERE platform = ? AND category = ? AND enabled = 1 ORDER BY name", (platform, category))
         return [dict(r) for r in await cursor.fetchall()]
 
-async def smb_get_all_services() -> list[dict]:
+async def smb_get_all_services():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM smb_services ORDER BY platform, category, name")
         return [dict(r) for r in await cursor.fetchall()]
 
-async def smb_set_enabled(service_id: int, enabled: bool):
+async def smb_set_enabled(service_id, enabled):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE smb_services SET enabled = ? WHERE service_id = ?", (1 if enabled else 0, service_id))
         await db.commit()
+
 
 
 
