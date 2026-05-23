@@ -19,7 +19,14 @@ class MangoBot(commands.Bot):
         await db.init_db()
         print("  ✅ Database initialized")
 
-        for cog in ["cogs.admin", "cogs.products", "cogs.seller"]:
+        cogs = [
+            "cogs.admin",
+            "cogs.products",
+            "cogs.seller",
+            "cogs.socials",
+            "cogs.smb_admin",
+        ]
+        for cog in cogs:
             await self.load_extension(cog)
             print(f"  ✅ Loaded {cog}")
 
