@@ -1,4 +1,5 @@
 # cogs/socials.py — Interactive social media order panel.
+# owner_mode is threaded through every view so buyers never see your costs.
 
 import discord
 from discord import app_commands
@@ -6,7 +7,10 @@ from discord.ext import commands
 import database as db
 import smb as smb_api
 import config as cfg
-from helpers import mango_embed, error_embed, success_embed, is_owner, DIVIDER, DIVIDER_SHORT
+from helpers import (
+    mango_embed, error_embed, success_embed, is_owner,
+    DIVIDER, DIVIDER_SHORT, send_log, log_smb_order,
+)
 
 PLATFORM_EMOJI = {
     "Instagram": "📸", "TikTok": "🎵", "YouTube": "▶️", "Facebook": "👥",
@@ -36,12 +40,32 @@ def smb_maintenance_embed():
     return embed
 
 
+def price_display(service: dict, owner_mode: bool) -> str:
+    """Return the correct price string based on who's viewing."""
+    if owner_mode:
+        return f"${service['rate']} per 1,000 *(your cost)*"
+    buyer_rate = (service.get("buyer_rate") or "").strip()
+    if buyer_rate:
+        return f"${buyer_rate} per 1,000"
+    return "Contact for pricing"
+
+
+def service_dropdown_desc(service: dict, owner_mode: bool) -> str:
+    """Short description shown in the service dropdown."""
+    if owner_mode:
+        return f"${service['rate']}/1k  •  Min: {service['min_qty']}  •  Max: {service['max_qty']}"
+    buyer_rate = (service.get("buyer_rate") or "").strip()
+    rate_str = f"${buyer_rate}/1k" if buyer_rate else "See details"
+    return f"{rate_str}  •  Min: {service['min_qty']}  •  Max: {service['max_qty']}"
+
+
 # ── STEP 1: Platform ─────────────────────────────────────────────────────────
 
 class PlatformView(discord.ui.View):
-    def __init__(self, author_id):
+    def __init__(self, author_id, owner_mode=False):
         super().__init__(timeout=180)
         self.author_id = author_id
+        self.owner_mode = owner_mode
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.author_id:
@@ -65,10 +89,10 @@ class PlatformView(discord.ui.View):
         if not categories:
             await interaction.response.edit_message(
                 embed=make_embed(platform_label(platform), "No services configured for this platform yet."),
-                view=BackView(self.author_id, PlatformView)
+                view=BackView(self.author_id, PlatformView, self.owner_mode)
             )
             return
-        view = CategoryView(self.author_id, platform)
+        view = CategoryView(self.author_id, platform, self.owner_mode)
         await view.build_select(categories)
         await interaction.response.edit_message(
             embed=make_embed(f"{platform_label(platform)}  — Select Category", f"{DIVIDER}\n\nChoose a **category** to browse services."),
@@ -79,10 +103,11 @@ class PlatformView(discord.ui.View):
 # ── STEP 2: Category ─────────────────────────────────────────────────────────
 
 class CategoryView(discord.ui.View):
-    def __init__(self, author_id, platform):
+    def __init__(self, author_id, platform, owner_mode=False):
         super().__init__(timeout=180)
         self.author_id = author_id
         self.platform = platform
+        self.owner_mode = owner_mode
         back = discord.ui.Button(label="◀ Back", style=discord.ButtonStyle.secondary, row=1)
         back.callback = self.go_back
         self.add_item(back)
@@ -103,11 +128,9 @@ class CategoryView(discord.ui.View):
         category = interaction.data["values"][0]
         services = await db.smb_get_services(self.platform, category)
         if not services:
-            await interaction.response.edit_message(
-                embed=make_embed(f"📂  {category}", "No services in this category yet."), view=self
-            )
+            await interaction.response.edit_message(embed=make_embed(f"📂  {category}", "No services in this category yet."), view=self)
             return
-        view = ServiceView(self.author_id, self.platform, category)
+        view = ServiceView(self.author_id, self.platform, category, self.owner_mode)
         await view.build_select(services)
         await interaction.response.edit_message(
             embed=make_embed(f"{platform_label(self.platform)}  ›  {category}", f"{DIVIDER}\n\nChoose a **service** to place an order."),
@@ -115,22 +138,20 @@ class CategoryView(discord.ui.View):
         )
 
     async def go_back(self, interaction):
-        view = PlatformView(self.author_id)
+        view = PlatformView(self.author_id, self.owner_mode)
         await view.build_select()
-        await interaction.response.edit_message(
-            embed=make_embed("🌐  Socials Panel", f"{DIVIDER}\n\nSelect a **platform** to get started."),
-            view=view
-        )
+        await interaction.response.edit_message(embed=make_embed("🌐  Socials Panel", f"{DIVIDER}\n\nSelect a **platform** to get started."), view=view)
 
 
 # ── STEP 3: Service ──────────────────────────────────────────────────────────
 
 class ServiceView(discord.ui.View):
-    def __init__(self, author_id, platform, category):
+    def __init__(self, author_id, platform, category, owner_mode=False):
         super().__init__(timeout=180)
         self.author_id = author_id
         self.platform = platform
         self.category = category
+        self.owner_mode = owner_mode
         back = discord.ui.Button(label="◀ Back", style=discord.ButtonStyle.secondary, row=1)
         back.callback = self.go_back
         self.add_item(back)
@@ -146,7 +167,7 @@ class ServiceView(discord.ui.View):
             discord.SelectOption(
                 label=s["name"][:100],
                 value=str(s["service_id"]),
-                description=f"${s['rate']}/1k  •  Min: {s['min_qty']}  •  Max: {s['max_qty']}"[:100],
+                description=service_dropdown_desc(s, self.owner_mode)[:100],
             )
             for s in services[:25]
         ]
@@ -158,14 +179,13 @@ class ServiceView(discord.ui.View):
         service = await db.smb_get_service(int(interaction.data["values"][0]))
         if not service:
             return await interaction.response.send_message(embed=error_embed("Service not found."), ephemeral=True)
-        view = OrderDetailView(self.author_id, self.platform, self.category, service)
+        view = OrderDetailView(self.author_id, self.platform, self.category, service, self.owner_mode)
         hint_line = f"\n**Link required:** {service['link_hint']}" if service.get("link_hint") else ""
         await interaction.response.edit_message(
             embed=make_embed(
                 f"🛒  {service['name']}",
                 f"{platform_label(self.platform)}  ›  {self.category}\n{DIVIDER}\n\n"
-                f"**Service ID:** `{service['service_id']}`\n"
-                f"**Rate:** ${service['rate']} per 1,000\n"
+                f"**Rate:** {price_display(service, self.owner_mode)}\n"
                 f"**Min quantity:** {service['min_qty']:,}\n"
                 f"**Max quantity:** {service['max_qty']:,}"
                 f"{hint_line}\n\n"
@@ -176,7 +196,7 @@ class ServiceView(discord.ui.View):
 
     async def go_back(self, interaction):
         categories = await db.smb_get_categories(self.platform)
-        view = CategoryView(self.author_id, self.platform)
+        view = CategoryView(self.author_id, self.platform, self.owner_mode)
         await view.build_select(categories)
         await interaction.response.edit_message(
             embed=make_embed(f"{platform_label(self.platform)}  — Select Category", f"{DIVIDER}\n\nChoose a **category** to browse services."),
@@ -187,12 +207,13 @@ class ServiceView(discord.ui.View):
 # ── STEP 4: Order Detail ─────────────────────────────────────────────────────
 
 class OrderDetailView(discord.ui.View):
-    def __init__(self, author_id, platform, category, service):
+    def __init__(self, author_id, platform, category, service, owner_mode=False):
         super().__init__(timeout=180)
         self.author_id = author_id
         self.platform = platform
         self.category = category
         self.service = service
+        self.owner_mode = owner_mode
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.author_id:
@@ -203,7 +224,7 @@ class OrderDetailView(discord.ui.View):
     @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary)
     async def go_back(self, interaction, button):
         services = await db.smb_get_services(self.platform, self.category)
-        view = ServiceView(self.author_id, self.platform, self.category)
+        view = ServiceView(self.author_id, self.platform, self.category, self.owner_mode)
         await view.build_select(services)
         await interaction.response.edit_message(
             embed=make_embed(f"{platform_label(self.platform)}  ›  {self.category}", f"{DIVIDER}\n\nChoose a **service** to place an order."),
@@ -212,17 +233,17 @@ class OrderDetailView(discord.ui.View):
 
     @discord.ui.button(label="🛒 Place Order", style=discord.ButtonStyle.success)
     async def place_order(self, interaction, button):
-        await interaction.response.send_modal(OrderModal(self.service))
+        await interaction.response.send_modal(OrderModal(self.service, self.owner_mode))
 
 
 # ── STEP 5: Modal ────────────────────────────────────────────────────────────
 
 class OrderModal(discord.ui.Modal):
-    def __init__(self, service: dict):
+    def __init__(self, service: dict, owner_mode: bool = False):
         super().__init__(title=f"Order — {service['name'][:40]}")
         self.service = service
+        self.owner_mode = owner_mode
 
-        # Use the custom link_hint if set, otherwise fall back to generic
         link_hint = (service.get("link_hint") or "").strip()
         link_label = link_hint[:45] if link_hint else "Link / URL"
         link_placeholder = f"e.g. {link_hint}" if link_hint else "Paste the full URL here"
@@ -257,46 +278,64 @@ class OrderModal(discord.ui.Modal):
             )
 
         link = self.link_input.value.strip()
-        estimated_cost = (quantity / 1000) * float(s["rate"])
 
-        balance_before = "N/A"
-        balance_after = "N/A"
-        try:
-            bal = await smb_api.get_balance()
-            current_bal = float(bal.get("balance", 0))
-            currency = bal.get("currency", "USD")
-            balance_before = f"${current_bal:.5f} {currency}"
-            balance_after = f"${max(0, current_bal - estimated_cost):.5f} {currency}"
-        except Exception:
-            pass
+        # Cost shown to owner uses real rate; buyers see buyer_rate if set
+        if self.owner_mode:
+            estimated_cost = (quantity / 1000) * float(s["rate"])
+            cost_display = f"~${estimated_cost:.5f} *(your cost)*"
+        else:
+            buyer_rate = (s.get("buyer_rate") or "").strip()
+            if buyer_rate:
+                estimated_cost = (quantity / 1000) * float(buyer_rate)
+                cost_display = f"~${estimated_cost:.5f}"
+            else:
+                estimated_cost = (quantity / 1000) * float(s["rate"])
+                cost_display = "Contact for pricing"
 
-        embed = make_embed(
-            "📋  Order Preview",
+        # Balance — only shown to owner
+        balance_before_str = None
+        balance_after_str = None
+        if self.owner_mode:
+            try:
+                bal = await smb_api.get_balance()
+                current_bal = float(bal.get("balance", 0))
+                currency = bal.get("currency", "USD")
+                balance_before_str = f"${current_bal:.5f} {currency}"
+                balance_after_str = f"${max(0, current_bal - estimated_cost):.5f} {currency}"
+            except Exception:
+                pass
+
+        desc = (
             f"**{s['name']}**\n{DIVIDER}\n\n"
             f"**Link:** {link}\n"
             f"**Quantity:** {quantity:,}\n"
-            f"**Rate:** ${s['rate']} per 1,000\n"
-            f"**Estimated cost:** ~${estimated_cost:.5f}\n\n"
-            f"**Your balance:** {balance_before}\n"
-            f"**After order:** {balance_after}\n\n"
-            f"Confirm or cancel below."
+            f"**Rate:** {price_display(s, self.owner_mode)}\n"
+            f"**Estimated cost:** {cost_display}\n"
         )
-        await interaction.response.send_message(embed=embed, view=ConfirmOrderView(interaction.user.id, s, link, quantity, estimated_cost), ephemeral=True)
+        if self.owner_mode and balance_before_str:
+            desc += f"\n**Your SMB balance:** {balance_before_str}\n**After order:** {balance_after_str}\n"
+        desc += "\nConfirm or cancel below."
+
+        embed = make_embed("📋  Order Preview", desc)
+        view = ConfirmOrderView(interaction.user, s, link, quantity, estimated_cost, self.owner_mode, balance_before_str)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 # ── STEP 6: Confirm ──────────────────────────────────────────────────────────
 
 class ConfirmOrderView(discord.ui.View):
-    def __init__(self, author_id, service, link, quantity, estimated_cost):
+    def __init__(self, user, service, link, quantity, estimated_cost, owner_mode, smb_balance_before):
         super().__init__(timeout=60)
-        self.author_id = author_id
+        self.user = user
         self.service = service
         self.link = link
         self.quantity = quantity
         self.estimated_cost = estimated_cost
+        self.owner_mode = owner_mode
+        self.smb_balance_before = smb_balance_before
 
     async def interaction_check(self, interaction):
-        return interaction.user.id == self.author_id
+        return interaction.user.id == self.user.id
 
     @discord.ui.button(label="✅ Confirm Order", style=discord.ButtonStyle.success)
     async def confirm(self, interaction, button):
@@ -307,29 +346,53 @@ class ConfirmOrderView(discord.ui.View):
             return await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed(f"Order failed:\n{e}"), view=None)
 
         order_id = result.get("order", "?")
-        balance_str = "N/A"
+
+        # Fetch updated SMB balance
+        smb_balance_after = None
+        new_balance_str = None
         try:
             bal = await smb_api.get_balance()
-            balance_str = f"${float(bal['balance']):.5f} {bal.get('currency', 'USD')}"
+            smb_balance_after = f"${float(bal['balance']):.5f} {bal.get('currency', 'USD')}"
+            new_balance_str = smb_balance_after
         except Exception:
             pass
 
-        embed = discord.Embed(
-            title="✅  Order Placed",
-            description=(
-                f"**{self.service['name']}**\n{DIVIDER}\n\n"
-                f"**Order ID:** `{order_id}`\n"
-                f"**Link:** {self.link}\n"
-                f"**Quantity:** {self.quantity:,}\n"
-                f"**Est. cost:** ~${self.estimated_cost:.5f}\n\n"
-                f"**New balance:** {balance_str}\n\n"
-                f"Use the buttons below to monitor your order."
-            ),
-            color=discord.Colour.green(),
+        # Confirmation embed — balance only shown to owner
+        desc = (
+            f"**{self.service['name']}**\n{DIVIDER}\n\n"
+            f"**Order ID:** `{order_id}`\n"
+            f"**Link:** {self.link}\n"
+            f"**Quantity:** {self.quantity:,}\n"
+            f"**Est. cost:** ~${self.estimated_cost:.5f}\n"
         )
+        if self.owner_mode and new_balance_str:
+            desc += f"\n**New SMB balance:** {new_balance_str}\n"
+        desc += "\nUse the buttons below to monitor your order."
+
+        embed = discord.Embed(title="✅  Order Placed", description=desc, color=discord.Colour.green())
         embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
+
         order_id_int = int(order_id) if str(order_id).isdigit() else 0
-        await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=OrderStatusView(interaction.user.id, order_id_int))
+        await interaction.followup.edit_message(
+            message_id=interaction.message.id, embed=embed,
+            view=OrderStatusView(self.user.id, order_id_int)
+        )
+
+        # ── LOG TO CHANNEL ────────────────────────────────────────────────────
+        await send_log(
+            interaction.client,
+            log_smb_order(
+                user=self.user,
+                service_name=self.service["name"],
+                platform=self.service["platform"],
+                link=self.link,
+                quantity=self.quantity,
+                order_id=order_id,
+                estimated_cost=self.estimated_cost,
+                smb_balance_before=self.smb_balance_before,
+                smb_balance_after=smb_balance_after,
+            )
+        )
 
     @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction, button):
@@ -384,19 +447,18 @@ class OrderStatusView(discord.ui.View):
 
 
 class BackView(discord.ui.View):
-    def __init__(self, author_id, target_class):
+    def __init__(self, author_id, target_class, owner_mode=False):
         super().__init__(timeout=60)
         self.author_id = author_id
         self.target_class = target_class
+        self.owner_mode = owner_mode
 
     @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary)
     async def go_back(self, interaction, button):
         if self.target_class == PlatformView:
-            view = PlatformView(self.author_id)
+            view = PlatformView(self.author_id, self.owner_mode)
             await view.build_select()
-            await interaction.response.edit_message(
-                embed=make_embed("🌐  Socials Panel", f"{DIVIDER}\n\nSelect a **platform** to get started."), view=view
-            )
+            await interaction.response.edit_message(embed=make_embed("🌐  Socials Panel", f"{DIVIDER}\n\nSelect a **platform** to get started."), view=view)
 
 
 # ── COG ───────────────────────────────────────────────────────────────────────
@@ -408,10 +470,13 @@ class Socials(commands.Cog):
 
     @app_commands.command(name="socials", description="Open the social media order panel")
     async def socials(self, interaction: discord.Interaction):
+        owner_mode = is_owner(interaction)
         smb_maint = (await db.get_setting("smb_maintenance", "0")) == "1"
-        if not is_owner(interaction):
+
+        if not owner_mode:
             if smb_maint:
                 return await interaction.response.send_message(embed=smb_maintenance_embed(), ephemeral=True)
+            # Future: add seller/buyer check here when opening to more users
             return await interaction.response.send_message(embed=error_embed("🔒 Only the bot owner can use this command."), ephemeral=True)
 
         platforms = await db.smb_get_platforms()
@@ -421,7 +486,7 @@ class Socials(commands.Cog):
                 ephemeral=True,
             )
 
-        view = PlatformView(interaction.user.id)
+        view = PlatformView(interaction.user.id, owner_mode=owner_mode)
         await view.build_select()
         await interaction.response.send_message(
             embed=make_embed("🌐  Socials Panel", f"{DIVIDER}\n\nSelect a **platform** to get started."),
@@ -432,4 +497,5 @@ class Socials(commands.Cog):
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(Socials(bot), guild=guild)
+
 
