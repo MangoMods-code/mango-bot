@@ -1,5 +1,4 @@
 # cogs/smb_admin.py — Admin commands for managing SMB social media services.
-# All commands are server-only and owner-only.
 
 import discord
 from discord import app_commands
@@ -42,26 +41,19 @@ class SmbAdmin(commands.Cog):
     async def smbmaintenance(self, interaction: discord.Interaction):
         if await self._check(interaction):
             return
-
         current = (await db.get_setting("smb_maintenance", "0")) == "1"
         new_state = not current
         await db.set_setting("smb_maintenance", "1" if new_state else "0")
-
         if new_state:
             embed = mango_embed(
                 "🔧  Socials Panel — OFF",
-                f"The `/socials` panel is now **disabled**.\n"
-                f"{DIVIDER_SHORT}\n"
-                f"Use `/smbmaintenance` again to turn it back on."
+                f"The `/socials` panel is now **disabled**.\n{DIVIDER_SHORT}\nUse `/smbmaintenance` again to turn it back on."
             )
         else:
             embed = mango_embed(
                 "🟢  Socials Panel — ON",
-                f"The `/socials` panel is now **enabled**.\n"
-                f"{DIVIDER_SHORT}\n"
-                f"Buyers can now use it."
+                f"The `/socials` panel is now **enabled**.\n{DIVIDER_SHORT}\nBuyers can now use it."
             )
-
         await interaction.response.send_message(embed=embed)
 
     # ── ADD SERVICE ──────────────────────────────────────────────────────────
@@ -75,13 +67,15 @@ class SmbAdmin(commands.Cog):
         min_qty="Minimum order quantity",
         max_qty="Maximum order quantity",
         rate="Price per 1,000 (e.g. 0.90)",
+        link_hint="What to ask for in the link field (e.g. 'TikTok video URL', 'Instagram profile URL')",
     )
     @app_commands.choices(platform=[
         app_commands.Choice(name=p, value=p) for p in PLATFORMS
     ])
     async def smbaddservice(self, interaction: discord.Interaction, platform: str,
                             category: str, service_id: int, name: str,
-                            min_qty: int, max_qty: int, rate: str):
+                            min_qty: int, max_qty: int, rate: str,
+                            link_hint: str = ""):
         if await self._check(interaction):
             return
         try:
@@ -90,12 +84,13 @@ class SmbAdmin(commands.Cog):
             return await interaction.response.send_message(
                 embed=error_embed("Rate must be a number (e.g. `0.90`)."), ephemeral=True
             )
-        await db.smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate)
+        await db.smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate, link_hint)
+        hint_line = f"\nLink hint: *{link_hint}*" if link_hint else ""
         embed = success_embed(
             f"**{name}** added to **{platform}** › {category}\n"
             f"{DIVIDER_SHORT}\n"
             f"Service ID: `{service_id}`  •  Rate: ${rate}/1k\n"
-            f"Min: {min_qty:,}  •  Max: {max_qty:,}"
+            f"Min: {min_qty:,}  •  Max: {max_qty:,}{hint_line}"
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -113,8 +108,7 @@ class SmbAdmin(commands.Cog):
             )
         await db.smb_remove_service(service_id)
         await interaction.response.send_message(
-            embed=success_embed(f"**{service['name']}** (ID: `{service_id}`) removed."),
-            ephemeral=True,
+            embed=success_embed(f"**{service['name']}** (ID: `{service_id}`) removed."), ephemeral=True
         )
 
     # ── LIST SERVICES ─────────────────────────────────────────────────────────
@@ -146,9 +140,10 @@ class SmbAdmin(commands.Cog):
                 current_category = s["category"]
                 lines.append(f"*{current_category}*")
             status = "🟢" if s["enabled"] else "🔴"
+            hint = f"  •  *{s['link_hint']}*" if s.get("link_hint") else ""
             lines.append(
                 f"> {status} `{s['service_id']}`  **{s['name']}**  "
-                f"— ${s['rate']}/1k  •  {s['min_qty']:,}–{s['max_qty']:,}"
+                f"— ${s['rate']}/1k  •  {s['min_qty']:,}–{s['max_qty']:,}{hint}"
             )
         chunks = paginate_items(lines, 15)
         pages = []
@@ -212,3 +207,4 @@ class SmbAdmin(commands.Cog):
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
+
