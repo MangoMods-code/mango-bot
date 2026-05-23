@@ -29,9 +29,7 @@ class SmbAdmin(commands.Cog):
             await interaction.response.send_message(embed=server_only_error(), ephemeral=True)
             return True
         if not is_owner(interaction):
-            await interaction.response.send_message(
-                embed=error_embed("🔒 Only the bot owner can use this command."), ephemeral=True
-            )
+            await interaction.response.send_message(embed=error_embed("🔒 Only the bot owner can use this command."), ephemeral=True)
             return True
         return False
 
@@ -45,15 +43,9 @@ class SmbAdmin(commands.Cog):
         new_state = not current
         await db.set_setting("smb_maintenance", "1" if new_state else "0")
         if new_state:
-            embed = mango_embed(
-                "🔧  Socials Panel — OFF",
-                f"The `/socials` panel is now **disabled**.\n{DIVIDER_SHORT}\nUse `/smbmaintenance` again to turn it back on."
-            )
+            embed = mango_embed("🔧  Socials Panel — OFF", f"The `/socials` panel is now **disabled**.\n{DIVIDER_SHORT}\nUse `/smbmaintenance` again to turn it back on.")
         else:
-            embed = mango_embed(
-                "🟢  Socials Panel — ON",
-                f"The `/socials` panel is now **enabled**.\n{DIVIDER_SHORT}\nBuyers can now use it."
-            )
+            embed = mango_embed("🟢  Socials Panel — ON", f"The `/socials` panel is now **enabled**.\n{DIVIDER_SHORT}\nBuyers can now use it.")
         await interaction.response.send_message(embed=embed)
 
     # ── ADD SERVICE ──────────────────────────────────────────────────────────
@@ -66,8 +58,9 @@ class SmbAdmin(commands.Cog):
         name="Display name for this service",
         min_qty="Minimum order quantity",
         max_qty="Maximum order quantity",
-        rate="Price per 1,000 (e.g. 0.90)",
-        link_hint="What to ask for in the link field (e.g. 'TikTok video URL', 'Instagram profile URL')",
+        rate="Your cost per 1,000 from SMB (e.g. 0.90) — hidden from buyers",
+        buyer_rate="What you charge buyers per 1,000 (e.g. 1.50) — shown to buyers",
+        link_hint="What to ask for in the link field (e.g. 'TikTok video URL')",
     )
     @app_commands.choices(platform=[
         app_commands.Choice(name=p, value=p) for p in PLATFORMS
@@ -75,21 +68,24 @@ class SmbAdmin(commands.Cog):
     async def smbaddservice(self, interaction: discord.Interaction, platform: str,
                             category: str, service_id: int, name: str,
                             min_qty: int, max_qty: int, rate: str,
-                            link_hint: str = ""):
+                            buyer_rate: str = "", link_hint: str = ""):
         if await self._check(interaction):
             return
-        try:
-            float(rate)
-        except ValueError:
-            return await interaction.response.send_message(
-                embed=error_embed("Rate must be a number (e.g. `0.90`)."), ephemeral=True
-            )
-        await db.smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate, link_hint)
+        for label_name, val in [("rate", rate), *([("buyer_rate", buyer_rate)] if buyer_rate else [])]:
+            try:
+                float(val)
+            except ValueError:
+                return await interaction.response.send_message(embed=error_embed(f"`{label_name}` must be a number (e.g. `0.90`)."), ephemeral=True)
+
+        await db.smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate, link_hint, buyer_rate)
+
+        buyer_line = f"\nBuyer rate: **${buyer_rate}/1k**" if buyer_rate else "\nBuyer rate: *not set*"
         hint_line = f"\nLink hint: *{link_hint}*" if link_hint else ""
         embed = success_embed(
             f"**{name}** added to **{platform}** › {category}\n"
             f"{DIVIDER_SHORT}\n"
-            f"Service ID: `{service_id}`  •  Rate: ${rate}/1k\n"
+            f"Service ID: `{service_id}`\n"
+            f"Your cost: **${rate}/1k**{buyer_line}\n"
             f"Min: {min_qty:,}  •  Max: {max_qty:,}{hint_line}"
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -103,21 +99,15 @@ class SmbAdmin(commands.Cog):
             return
         service = await db.smb_get_service(service_id)
         if not service:
-            return await interaction.response.send_message(
-                embed=error_embed(f"No service found with ID `{service_id}`."), ephemeral=True
-            )
+            return await interaction.response.send_message(embed=error_embed(f"No service found with ID `{service_id}`."), ephemeral=True)
         await db.smb_remove_service(service_id)
-        await interaction.response.send_message(
-            embed=success_embed(f"**{service['name']}** (ID: `{service_id}`) removed."), ephemeral=True
-        )
+        await interaction.response.send_message(embed=success_embed(f"**{service['name']}** (ID: `{service_id}`) removed."), ephemeral=True)
 
     # ── LIST SERVICES ─────────────────────────────────────────────────────────
 
     @app_commands.command(name="smbservices", description="List all configured SMB services (Admin)")
     @app_commands.describe(platform="Filter by platform (optional)")
-    @app_commands.choices(platform=[
-        app_commands.Choice(name="All platforms", value="all"),
-    ] + [app_commands.Choice(name=p, value=p) for p in PLATFORMS])
+    @app_commands.choices(platform=[app_commands.Choice(name="All platforms", value="all")] + [app_commands.Choice(name=p, value=p) for p in PLATFORMS])
     async def smbservices(self, interaction: discord.Interaction, platform: str = "all"):
         if await self._check(interaction):
             return
@@ -125,9 +115,7 @@ class SmbAdmin(commands.Cog):
         if platform != "all":
             all_services = [s for s in all_services if s["platform"] == platform]
         if not all_services:
-            return await interaction.response.send_message(
-                embed=mango_embed("📊  SMB Services", "No services configured yet."), ephemeral=True
-            )
+            return await interaction.response.send_message(embed=mango_embed("📊  SMB Services", "No services configured yet."), ephemeral=True)
         lines = []
         current_platform = None
         current_category = None
@@ -140,11 +128,9 @@ class SmbAdmin(commands.Cog):
                 current_category = s["category"]
                 lines.append(f"*{current_category}*")
             status = "🟢" if s["enabled"] else "🔴"
+            buyer = f" → ${s['buyer_rate']}/1k" if s.get("buyer_rate") else ""
             hint = f"  •  *{s['link_hint']}*" if s.get("link_hint") else ""
-            lines.append(
-                f"> {status} `{s['service_id']}`  **{s['name']}**  "
-                f"— ${s['rate']}/1k  •  {s['min_qty']:,}–{s['max_qty']:,}{hint}"
-            )
+            lines.append(f"> {status} `{s['service_id']}`  **{s['name']}**  — ${s['rate']}/1k{buyer}  •  {s['min_qty']:,}–{s['max_qty']:,}{hint}")
         chunks = paginate_items(lines, 15)
         pages = []
         for i, chunk in enumerate(chunks, 1):
@@ -154,9 +140,7 @@ class SmbAdmin(commands.Cog):
         if len(pages) == 1:
             await interaction.response.send_message(embed=pages[0], ephemeral=True)
         else:
-            await interaction.response.send_message(
-                embed=pages[0], view=PaginatorView(pages, interaction.user.id), ephemeral=True
-            )
+            await interaction.response.send_message(embed=pages[0], view=PaginatorView(pages, interaction.user.id), ephemeral=True)
 
     # ── SMB BALANCE ──────────────────────────────────────────────────────────
 
@@ -166,19 +150,14 @@ class SmbAdmin(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         if not cfg.SMB_API_KEY:
-            return await interaction.followup.send(
-                embed=error_embed("SMB API key not set.\n\nAdd `SMB_API_KEY` to your Railway environment variables.")
-            )
+            return await interaction.followup.send(embed=error_embed("SMB API key not set.\n\nAdd `SMB_API_KEY` to your Railway environment variables."))
         try:
             result = await smb_api.get_balance()
             balance = result.get("balance", "?")
             currency = result.get("currency", "USD")
         except Exception as e:
             return await interaction.followup.send(embed=error_embed(f"Failed to fetch balance:\n{e}"))
-        embed = mango_embed(
-            "💳  SMB Balance",
-            f"**${balance}** {currency}\n{DIVIDER_SHORT}\nSMBPanel account balance."
-        )
+        embed = mango_embed("💳  SMB Balance", f"**${balance}** {currency}\n{DIVIDER_SHORT}\nSMBPanel account balance.")
         await interaction.followup.send(embed=embed)
 
     # ── TOGGLE SERVICE ────────────────────────────────────────────────────────
@@ -194,17 +173,14 @@ class SmbAdmin(commands.Cog):
             return
         service = await db.smb_get_service(service_id)
         if not service:
-            return await interaction.response.send_message(
-                embed=error_embed(f"No service found with ID `{service_id}`."), ephemeral=True
-            )
+            return await interaction.response.send_message(embed=error_embed(f"No service found with ID `{service_id}`."), ephemeral=True)
         await db.smb_set_enabled(service_id, status == "enable")
         emoji = "🟢" if status == "enable" else "🔴"
-        await interaction.response.send_message(
-            embed=success_embed(f"{emoji} **{service['name']}** **{status}d**."), ephemeral=True
-        )
+        await interaction.response.send_message(embed=success_embed(f"{emoji} **{service['name']}** **{status}d**."), ephemeral=True)
 
 
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
+
 
