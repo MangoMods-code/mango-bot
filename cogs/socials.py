@@ -132,8 +132,11 @@ class CategoryView(discord.ui.View):
             return
         view = ServiceView(self.author_id, self.platform, category, self.owner_mode)
         await view.build_select(services)
+        # Show category notes if any
+        notes = await db.smb_get_category_notes(self.platform, category)
+        notes_line = f"\n\n⚠️ **Note:** {notes}" if notes else ""
         await interaction.response.edit_message(
-            embed=make_embed(f"{platform_label(self.platform)}  ›  {category}", f"{DIVIDER}\n\nChoose a **service** to place an order."),
+            embed=make_embed(f"{platform_label(self.platform)}  ›  {category}", f"{DIVIDER}\n\nChoose a **service** to place an order.{notes_line}"),
             view=view
         )
 
@@ -330,9 +333,24 @@ class ConfirmOrderView(discord.ui.View):
     @discord.ui.button(label="✅ Confirm Order", style=discord.ButtonStyle.success)
     async def confirm(self, interaction, button):
         await interaction.response.defer()
+
+        # Deduct SMB balance from buyer (non-owner only)
+        if not self.owner_mode:
+            current_bal = await db.smb_get_user_balance(str(self.user.id))
+            if current_bal < self.estimated_cost:
+                return await interaction.followup.edit_message(
+                    message_id=interaction.message.id,
+                    embed=error_embed(f"Insufficient SMB balance.\n\nNeed: **${self.estimated_cost:.2f}**  •  Have: **${current_bal:.2f}**"),
+                    view=None
+                )
+            await db.smb_subtract_user_balance(str(self.user.id), self.estimated_cost)
+
         try:
             result = await smb_api.add_order(service_id=self.service["service_id"], link=self.link, quantity=self.quantity)
         except Exception as e:
+            # Refund buyer if API call failed
+            if not self.owner_mode:
+                await db.smb_add_user_balance(str(self.user.id), self.estimated_cost)
             return await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed(f"Order failed:\n{e}"), view=None)
 
         order_id = result.get("order", "?")
@@ -345,15 +363,33 @@ class ConfirmOrderView(discord.ui.View):
         except Exception:
             pass
 
+        # Record order in database
+        actual_cost = (self.quantity / 1000) * float(self.service["rate"])
+        await db.smb_record_order(
+            user_id=str(self.user.id),
+            smb_order_id=str(order_id),
+            service_id=self.service["service_id"],
+            service_name=self.service["name"],
+            platform=self.service["platform"],
+            link=self.link,
+            quantity=self.quantity,
+            buyer_cost=self.estimated_cost,
+            actual_cost=actual_cost,
+        )
+
+        buyer_new_bal = await db.smb_get_user_balance(str(self.user.id)) if not self.owner_mode else None
+
         desc = (
             f"**{self.service['name']}**\n{DIVIDER}\n\n"
             f"**Order ID:** `{order_id}`\n"
             f"**Link:** {self.link}\n"
             f"**Quantity:** {self.quantity:,}\n"
-            f"**Est. cost:** ~${self.estimated_cost:.5f}\n"
+            f"**Cost:** ${self.estimated_cost:.2f}\n"
         )
         if self.owner_mode and new_balance_str:
-            desc += f"\n**New SMB balance:** {new_balance_str}\n"
+            desc += f"\n**New SMB API balance:** {new_balance_str}\n"
+        elif buyer_new_bal is not None:
+            desc += f"\n**Your SMB balance:** **${buyer_new_bal:.2f}**\n"
         desc += "\nUse the buttons below to monitor your order."
 
         embed = discord.Embed(title="✅  Order Placed", description=desc, color=discord.Colour.green())
@@ -485,6 +521,7 @@ class Socials(commands.Cog):
 async def setup(bot):
     # Global — no guild restriction so it appears in DMs for sellers
     await bot.add_cog(Socials(bot))
+
 
 
 
