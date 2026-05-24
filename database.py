@@ -149,8 +149,10 @@ async def init_db():
                 pass
 
         for col, definition in [
-            ("link_hint",  "TEXT NOT NULL DEFAULT ''"),
-            ("buyer_rate", "TEXT NOT NULL DEFAULT ''"),
+            ("link_hint",         "TEXT NOT NULL DEFAULT ''"),
+            ("buyer_rate",        "TEXT NOT NULL DEFAULT ''"),
+            ("extra_field_label", "TEXT NOT NULL DEFAULT ''"),
+            ("extra_field_param", "TEXT NOT NULL DEFAULT ''"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE smb_services ADD COLUMN {col} {definition}")
@@ -506,24 +508,27 @@ async def clear_all_keys():
 # SMB SERVICES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate, link_hint="", buyer_rate=""):
+async def smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate,
+                          link_hint="", buyer_rate="", extra_field_label="", extra_field_param=""):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("""
-            INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate, link_hint, buyer_rate)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate, link_hint, buyer_rate, extra_field_label, extra_field_param)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(service_id) DO UPDATE SET
                 platform=excluded.platform, category=excluded.category, name=excluded.name,
                 min_qty=excluded.min_qty, max_qty=excluded.max_qty, rate=excluded.rate,
-                link_hint=excluded.link_hint, buyer_rate=excluded.buyer_rate
-        """, (platform, category, service_id, name, min_qty, max_qty, rate, link_hint, buyer_rate))
+                link_hint=excluded.link_hint, buyer_rate=excluded.buyer_rate,
+                extra_field_label=excluded.extra_field_label, extra_field_param=excluded.extra_field_param
+        """, (platform, category, service_id, name, min_qty, max_qty, rate, link_hint, buyer_rate, extra_field_label, extra_field_param))
         await db.commit()
         cursor = await db.execute("SELECT * FROM smb_services WHERE service_id = ?", (service_id,))
         return dict(await cursor.fetchone())
 
 async def smb_edit_service(service_id: int, **kwargs):
     """Edit any fields on a service. Only updates fields that are passed."""
-    allowed = {"platform", "category", "name", "min_qty", "max_qty", "rate", "buyer_rate", "link_hint", "enabled"}
+    allowed = {"platform", "category", "name", "min_qty", "max_qty", "rate",
+               "buyer_rate", "link_hint", "extra_field_label", "extra_field_param", "enabled"}
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
         return
@@ -636,6 +641,7 @@ async def smb_get_platform_notes(platform: str) -> str:
         cursor = await db.execute("SELECT notes FROM smb_platform_notes WHERE platform = ?", (platform,))
         row = await cursor.fetchone()
         return row[0] if row else ""
+
 
 
 
