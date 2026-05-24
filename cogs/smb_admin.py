@@ -291,20 +291,18 @@ class SmbAdmin(commands.Cog):
 
     # ── CATEGORY NOTES ────────────────────────────────────────────────────────
 
-    @app_commands.command(name="smbcategorynotes", description="Set instructions/notes for a service category (Admin)")
+    @app_commands.command(name="smbplatformnotes", description="Set instructions shown to buyers when they select a platform (Admin)")
     @app_commands.describe(
-        platform="Platform",
-        category="Category to add notes to",
+        platform="Platform to set notes for",
         notes="Instructions shown to buyers (e.g. 'Do not include anything after ? in the URL')",
     )
     @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
-    @app_commands.autocomplete(category=category_autocomplete)
-    async def smbcategorynotes(self, interaction: discord.Interaction, platform: str, category: str, notes: str):
+    async def smbplatformnotes(self, interaction: discord.Interaction, platform: str, notes: str):
         if await self._check(interaction):
             return
-        await db.smb_set_category_notes(platform, category, notes)
+        await db.smb_set_platform_notes(platform, notes)
         embed = success_embed(
-            f"Notes set for **{platform}** › **{category}**\n{DIVIDER_SHORT}\n*{notes}*"
+            f"Notes set for **{platform}**\n{DIVIDER_SHORT}\n*{notes}*"
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -454,6 +452,7 @@ class SmbSellerView(discord.ui.View):
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
+
 
 
 
