@@ -18,6 +18,7 @@ async def init_db():
                 username     TEXT NOT NULL DEFAULT 'unknown',
                 balance      INTEGER NOT NULL DEFAULT 0,
                 is_seller    INTEGER NOT NULL DEFAULT 0,
+                smb_balance  REAL NOT NULL DEFAULT 0.0,
                 created_at   TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
@@ -52,6 +53,7 @@ async def init_db():
             )
         """)
 
+        # Migrate variants table if it has an old CHECK constraint
         cursor = await db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='variants'")
         row = await cursor.fetchone()
         if row and "CHECK" in (row[0] or ""):
@@ -101,18 +103,39 @@ async def init_db():
         """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS smb_services (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform   TEXT NOT NULL,
-                category   TEXT NOT NULL,
-                service_id INTEGER NOT NULL UNIQUE,
-                name       TEXT NOT NULL,
-                min_qty    INTEGER NOT NULL DEFAULT 1,
-                max_qty    INTEGER NOT NULL DEFAULT 10000,
-                rate       TEXT NOT NULL DEFAULT '0.00',
-                buyer_rate TEXT NOT NULL DEFAULT '',
-                link_hint  TEXT NOT NULL DEFAULT '',
-                enabled    INTEGER NOT NULL DEFAULT 1,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL, category TEXT NOT NULL,
+                service_id INTEGER NOT NULL UNIQUE, name TEXT NOT NULL,
+                min_qty INTEGER NOT NULL DEFAULT 1, max_qty INTEGER NOT NULL DEFAULT 10000,
+                rate TEXT NOT NULL DEFAULT '0.00', buyer_rate TEXT NOT NULL DEFAULT '',
+                link_hint TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS smb_orders (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      TEXT NOT NULL,
+                smb_order_id TEXT NOT NULL,
+                service_id   INTEGER NOT NULL,
+                service_name TEXT NOT NULL,
+                platform     TEXT NOT NULL,
+                link         TEXT NOT NULL,
+                quantity     INTEGER NOT NULL,
+                buyer_cost   REAL NOT NULL DEFAULT 0.0,
+                actual_cost  REAL NOT NULL DEFAULT 0.0,
+                status       TEXT NOT NULL DEFAULT 'Processing',
+                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(discord_id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS smb_category_notes (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                category TEXT NOT NULL,
+                notes    TEXT NOT NULL DEFAULT '',
+                UNIQUE(platform, category)
             )
         """)
 
@@ -136,6 +159,12 @@ async def init_db():
                 await db.execute(f"ALTER TABLE smb_services ADD COLUMN {col} {definition}")
             except Exception:
                 pass
+
+        # Add smb_balance to users if not present
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN smb_balance REAL NOT NULL DEFAULT 0.0")
+        except Exception:
+            pass
 
         await db.execute("PRAGMA foreign_keys = ON")
         await db.commit()
@@ -231,6 +260,28 @@ async def subtract_balance(discord_id, amount):
 async def reset_balance(discord_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET balance = 0 WHERE discord_id = ?", (discord_id,))
+        await db.commit()
+
+# SMB balance helpers
+async def smb_get_user_balance(discord_id: str) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT smb_balance FROM users WHERE discord_id = ?", (discord_id,))
+        row = await cursor.fetchone()
+        return float(row[0]) if row else 0.0
+
+async def smb_add_user_balance(discord_id: str, amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET smb_balance = smb_balance + ? WHERE discord_id = ?", (amount, discord_id))
+        await db.commit()
+
+async def smb_set_user_balance(discord_id: str, amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET smb_balance = ? WHERE discord_id = ?", (amount, discord_id))
+        await db.commit()
+
+async def smb_subtract_user_balance(discord_id: str, amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET smb_balance = smb_balance - ? WHERE discord_id = ?", (amount, discord_id))
         await db.commit()
 
 
@@ -473,6 +524,18 @@ async def smb_add_service(platform, category, service_id, name, min_qty, max_qty
         cursor = await db.execute("SELECT * FROM smb_services WHERE service_id = ?", (service_id,))
         return dict(await cursor.fetchone())
 
+async def smb_edit_service(service_id: int, **kwargs):
+    """Edit any fields on a service. Only updates fields that are passed."""
+    allowed = {"platform", "category", "name", "min_qty", "max_qty", "rate", "buyer_rate", "link_hint", "enabled"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [service_id]
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(f"UPDATE smb_services SET {set_clause} WHERE service_id = ?", values)
+        await db.commit()
+
 async def smb_remove_service(service_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM smb_services WHERE service_id = ?", (service_id,))
@@ -488,6 +551,18 @@ async def smb_get_service(service_id):
 async def smb_get_platforms():
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT DISTINCT platform FROM smb_services WHERE enabled = 1 ORDER BY platform")
+        return [r[0] for r in await cursor.fetchall()]
+
+async def smb_get_all_categories():
+    """Return all distinct categories across all platforms."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT DISTINCT platform, category FROM smb_services ORDER BY platform, category")
+        return [{"platform": r[0], "category": r[1]} for r in await cursor.fetchall()]
+
+async def smb_get_categories_for_platform(platform: str):
+    """Return distinct categories for a given platform (for autocomplete)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT DISTINCT category FROM smb_services WHERE platform = ? ORDER BY category", (platform,))
         return [r[0] for r in await cursor.fetchall()]
 
 async def smb_get_categories(platform):
@@ -511,6 +586,63 @@ async def smb_set_enabled(service_id, enabled):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE smb_services SET enabled = ? WHERE service_id = ?", (1 if enabled else 0, service_id))
         await db.commit()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SMB ORDERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def smb_record_order(user_id: str, smb_order_id: str, service_id: int, service_name: str,
+                           platform: str, link: str, quantity: int, buyer_cost: float, actual_cost: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("""
+            INSERT INTO smb_orders (user_id, smb_order_id, service_id, service_name, platform, link, quantity, buyer_cost, actual_cost)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, smb_order_id, service_id, service_name, platform, link, quantity, buyer_cost, actual_cost))
+        await db.commit()
+
+async def smb_get_user_orders(discord_id: str) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM smb_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", (discord_id,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+async def smb_get_all_orders() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM smb_orders ORDER BY created_at DESC LIMIT 100")
+        return [dict(r) for r in await cursor.fetchall()]
+
+async def smb_update_order_status(smb_order_id: str, status: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE smb_orders SET status = ? WHERE smb_order_id = ?", (status, smb_order_id))
+        await db.commit()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SMB CATEGORY NOTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def smb_set_category_notes(platform: str, category: str, notes: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO smb_category_notes (platform, category, notes)
+            VALUES (?, ?, ?)
+            ON CONFLICT(platform, category) DO UPDATE SET notes = excluded.notes
+        """, (platform, category, notes))
+        await db.commit()
+
+async def smb_get_category_notes(platform: str, category: str) -> str:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT notes FROM smb_category_notes WHERE platform = ? AND category = ?", (platform, category)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else ""
+
 
 
 
