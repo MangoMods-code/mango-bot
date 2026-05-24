@@ -130,12 +130,9 @@ async def init_db():
             )
         """)
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS smb_category_notes (
-                id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform TEXT NOT NULL,
-                category TEXT NOT NULL,
-                notes    TEXT NOT NULL DEFAULT '',
-                UNIQUE(platform, category)
+            CREATE TABLE IF NOT EXISTS smb_platform_notes (
+                platform TEXT PRIMARY KEY,
+                notes    TEXT NOT NULL DEFAULT ''
             )
         """)
 
@@ -623,25 +620,23 @@ async def smb_update_order_status(smb_order_id: str, status: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SMB CATEGORY NOTES
+# SMB PLATFORM NOTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def smb_set_category_notes(platform: str, category: str, notes: str):
+async def smb_set_platform_notes(platform: str, notes: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            INSERT INTO smb_category_notes (platform, category, notes)
-            VALUES (?, ?, ?)
-            ON CONFLICT(platform, category) DO UPDATE SET notes = excluded.notes
-        """, (platform, category, notes))
+        await db.execute(
+            "INSERT INTO smb_platform_notes (platform, notes) VALUES (?, ?) ON CONFLICT(platform) DO UPDATE SET notes = excluded.notes",
+            (platform, notes)
+        )
         await db.commit()
 
-async def smb_get_category_notes(platform: str, category: str) -> str:
+async def smb_get_platform_notes(platform: str) -> str:
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT notes FROM smb_category_notes WHERE platform = ? AND category = ?", (platform, category)
-        )
+        cursor = await db.execute("SELECT notes FROM smb_platform_notes WHERE platform = ?", (platform,))
         row = await cursor.fetchone()
         return row[0] if row else ""
+
 
 
 
