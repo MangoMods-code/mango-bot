@@ -35,9 +35,16 @@ class SmbAdmin(commands.Cog):
         return False
 
     async def category_autocomplete(self, interaction: discord.Interaction, current: str):
-        platform = interaction.namespace.platform or ""
-        categories = await db.smb_get_categories_for_platform(platform) if platform else []
-        return [app_commands.Choice(name=c, value=c) for c in categories if current.lower() in c.lower()][:25]
+        try:
+            platform = (interaction.namespace.platform or "") if interaction.namespace else ""
+            categories = await db.smb_get_categories_for_platform(platform) if platform else []
+            return [
+                app_commands.Choice(name=c[:100], value=c[:100])
+                for c in categories
+                if current.lower() in c.lower()
+            ][:25]
+        except Exception:
+            return []
 
     # ── SYNC ─────────────────────────────────────────────────────────────────
 
@@ -486,9 +493,16 @@ class SmbToggleCommands(commands.Cog):
         return False
 
     async def category_autocomplete(self, interaction: discord.Interaction, current: str):
-        platform = interaction.namespace.platform or ""
-        categories = await db.smb_get_categories_for_platform(platform) if platform else []
-        return [app_commands.Choice(name=c, value=c) for c in categories if current.lower() in c.lower()][:25]
+        try:
+            platform = (interaction.namespace.platform or "") if interaction.namespace else ""
+            categories = await db.smb_get_categories_for_platform(platform) if platform else []
+            return [
+                app_commands.Choice(name=c[:100], value=c[:100])
+                for c in categories
+                if current.lower() in c.lower()
+            ][:25]
+        except Exception:
+            return []
 
     @app_commands.command(name="smbtoggle", description="Enable or disable a single SMB service (Admin)")
     @app_commands.describe(service_id="The SMB service ID", status="Enable or disable")
@@ -545,5 +559,6 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
 
 
