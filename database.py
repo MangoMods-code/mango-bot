@@ -508,6 +508,34 @@ async def clear_all_keys():
 # SMB SERVICES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+async def smb_sync_service(platform: str, category: str, service_id: int,
+                           name: str, min_qty: int, max_qty: int, rate: str) -> bool:
+    """
+    Import or update a service from the SMB API.
+    - New services: inserted with enabled=0 so nothing shows to buyers automatically.
+    - Existing services: only SMB-sourced fields updated (platform, category, name,
+      min_qty, max_qty, rate). Your buyer_rate, link_hint, extra fields, and enabled
+      status are all preserved.
+    Returns True if this was a new service, False if it was an update.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT id FROM smb_services WHERE service_id = ?", (service_id,))
+        existing = await cursor.fetchone()
+        if existing:
+            await db.execute("""
+                UPDATE smb_services
+                SET platform=?, category=?, name=?, min_qty=?, max_qty=?, rate=?
+                WHERE service_id=?
+            """, (platform, category, name, min_qty, max_qty, rate, service_id))
+        else:
+            await db.execute("""
+                INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate, enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            """, (platform, category, service_id, name, min_qty, max_qty, rate))
+        await db.commit()
+        return not existing
+
+
 async def smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate,
                           link_hint="", buyer_rate="", extra_field_label="", extra_field_param=""):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -641,6 +669,7 @@ async def smb_get_platform_notes(platform: str) -> str:
         cursor = await db.execute("SELECT notes FROM smb_platform_notes WHERE platform = ?", (platform,))
         row = await cursor.fetchone()
         return row[0] if row else ""
+
 
 
 
