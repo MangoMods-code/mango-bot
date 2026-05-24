@@ -140,8 +140,8 @@ class Admin(commands.Cog):
     # ── DM ANNOUNCE ──────────────────────────────────────────────────────────
 
     @app_commands.command(name="dmannounce", description="DM all sellers an announcement (Admin)")
-    @app_commands.describe(message="The message to send to all sellers")
-    async def dmannounce(self, interaction: discord.Interaction, message: str):
+    @app_commands.describe(title="Announcement title", message="The message to send to all sellers")
+    async def dmannounce(self, interaction: discord.Interaction, title: str, message: str):
         if await self._admin_check(interaction):
             return
 
@@ -152,7 +152,7 @@ class Admin(commands.Cog):
             return await interaction.followup.send(embed=error_embed("No sellers registered yet."))
 
         announce_embed = discord.Embed(
-            title="📢  Announcement",
+            title=f"📢  {title}",
             description=message,
             color=discord.Colour(int(cfg.EMBED_COLOR, 16)),
         )
@@ -373,4 +373,5 @@ class ConfirmClearView(discord.ui.View):
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(Admin(bot), guild=guild)
+
 
