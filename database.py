@@ -530,7 +530,7 @@ async def smb_sync_service(platform: str, category: str, service_id: int,
         else:
             await db.execute("""
                 INSERT INTO smb_services (platform, category, service_id, name, min_qty, max_qty, rate, enabled)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             """, (platform, category, service_id, name, min_qty, max_qty, rate))
         await db.commit()
         return not existing
@@ -617,6 +617,26 @@ async def smb_set_enabled(service_id, enabled):
         await db.execute("UPDATE smb_services SET enabled = ? WHERE service_id = ?", (1 if enabled else 0, service_id))
         await db.commit()
 
+async def smb_set_category_enabled(platform: str, category: str, enabled: bool) -> int:
+    """Enable or disable all services in a platform+category. Returns the count affected."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE smb_services SET enabled = ? WHERE platform = ? AND category = ?",
+            (1 if enabled else 0, platform, category)
+        )
+        await db.commit()
+        return cursor.rowcount
+
+async def smb_set_platform_enabled(platform: str, enabled: bool) -> int:
+    """Enable or disable all services for an entire platform. Returns count affected."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE smb_services SET enabled = ? WHERE platform = ?",
+            (1 if enabled else 0, platform)
+        )
+        await db.commit()
+        return cursor.rowcount
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SMB ORDERS
@@ -669,12 +689,3 @@ async def smb_get_platform_notes(platform: str) -> str:
         cursor = await db.execute("SELECT notes FROM smb_platform_notes WHERE platform = ?", (platform,))
         row = await cursor.fetchone()
         return row[0] if row else ""
-
-
-
-
-
-
-
-
-
