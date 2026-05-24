@@ -313,6 +313,54 @@ class Seller(commands.Cog):
             api_balance_before=api_balance_before, api_balance_after=api_balance_after,
         ))
 
+    # ── SMB HELP ──────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="smbhelp", description="Show all social media panel commands")
+    async def smbhelp(self, interaction: discord.Interaction):
+        if not await seller_check(interaction):
+            return await interaction.response.send_message(embed=error_embed(NO_ACCESS), ephemeral=True)
+        embed = mango_embed("📱  Socials Panel", f"Social media growth services.\n{DIVIDER}")
+        embed.add_field(
+            name="📬  Your Commands",
+            value=(
+                "`/socials` — Open the order panel\n"
+                "`/smborders` — View your past & active orders\n"
+                "`/smbhelp` — This message"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="💳  Balance",
+            value="Your SMB balance is separate from your key reseller balance.\nContact the owner to top it up.",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── SMB ORDERS ────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="smborders", description="View your past and active social media orders")
+    async def smborders(self, interaction: discord.Interaction):
+        if not await seller_check(interaction):
+            return await interaction.response.send_message(embed=error_embed(NO_ACCESS), ephemeral=True)
+
+        orders = await db.smb_get_user_orders(str(interaction.user.id))
+        smb_bal = await db.smb_get_user_balance(str(interaction.user.id))
+
+        if not orders:
+            return await interaction.response.send_message(
+                embed=mango_embed("📦  Your SMB Orders", f"💳 SMB Balance: **${smb_bal:.2f}**\n{DIVIDER_SHORT}\n\nNo orders yet. Use `/socials` to place one!"),
+                ephemeral=True,
+            )
+
+        # Build dropdown with up to 25 most recent orders
+        view = SmbOrdersView(interaction.user.id, orders[:25])
+        embed = mango_embed(
+            "📦  Your SMB Orders",
+            f"💳 SMB Balance: **${smb_bal:.2f}**\n{DIVIDER_SHORT}\n\n"
+            f"**{len(orders)}** total order(s).\nSelect one from the dropdown to see details."
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
     # ── HELP ──────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="help", description="Show all available commands")
@@ -348,8 +396,72 @@ class Seller(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class SmbOrdersView(discord.ui.View):
+    def __init__(self, author_id, orders):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.orders = {str(o["smb_order_id"]): o for o in orders}
+        options = []
+        for o in orders:
+            date = o["created_at"][:10]
+            label = f"#{o['smb_order_id']} — {o['service_name'][:40]}"
+            desc = f"{o['platform']}  •  {o['quantity']:,}  •  {date}"
+            options.append(discord.SelectOption(label=label[:100], value=str(o["smb_order_id"]), description=desc[:100]))
+        select = discord.ui.Select(placeholder="📦  Select an order to see details...", options=options)
+        select.callback = self.on_order_select
+        self.add_item(select)
+
+    async def interaction_check(self, interaction):
+        return interaction.user.id == self.author_id
+
+    async def on_order_select(self, interaction: discord.Interaction):
+        order_id = interaction.data["values"][0]
+        o = self.orders.get(order_id)
+        if not o:
+            return await interaction.response.send_message(embed=error_embed("Order not found."), ephemeral=True)
+
+        # Fetch live status from SMB API
+        live_status = o["status"]
+        remains = "?"
+        start_count = "?"
+        try:
+            import smb as smb_api
+            status = await smb_api.get_order_status(int(order_id))
+            live_status = status.get("status", live_status)
+            remains = status.get("remains", "?")
+            start_count = status.get("start_count", "?")
+            await db.smb_update_order_status(order_id, live_status)
+        except Exception:
+            pass
+
+        color_map = {
+            "Completed": discord.Colour.green(), "In progress": discord.Colour.orange(),
+            "Partial": discord.Colour.yellow(), "Processing": discord.Colour.blue(),
+            "Canceled": discord.Colour.red(),
+        }
+        embed = discord.Embed(
+            title=f"📦  Order #{order_id}",
+            description=(
+                f"**Service:** {o['service_name']}\n"
+                f"**Platform:** {o['platform']}\n"
+                f"**Link:** {o['link']}\n"
+                f"**Quantity:** {o['quantity']:,}\n"
+                f"**Cost:** ${o['buyer_cost']:.2f}\n"
+                f"**Status:** {live_status}\n"
+                f"**Start count:** {start_count}\n"
+                f"**Remaining:** {remains}\n"
+                f"**Placed:** {o['created_at'][:16]}"
+            ),
+            color=color_map.get(live_status, discord.Colour.greyple()),
+        )
+        embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def setup(bot):
     await bot.add_cog(Seller(bot))
+
+
 
 
 
