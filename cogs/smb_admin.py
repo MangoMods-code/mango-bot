@@ -39,67 +39,43 @@ class SmbAdmin(commands.Cog):
         categories = await db.smb_get_categories_for_platform(platform) if platform else []
         return [app_commands.Choice(name=c, value=c) for c in categories if current.lower() in c.lower()][:25]
 
-    # ── SYNC SERVICES FROM SMB API ──────────────────────────────────────────
+    # ── SYNC ─────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="smbsync", description="Import all services from the SMB API for a platform (Admin)")
-    @app_commands.describe(
-        platform="Platform to sync — filters services where the category contains this name",
-    )
+    @app_commands.describe(platform="Platform to sync — filters services where the category contains this name")
     @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
     async def smbsync(self, interaction: discord.Interaction, platform: str):
         if await self._check(interaction):
             return
-
         await interaction.response.defer(ephemeral=True)
-
         if not cfg.SMB_API_KEY:
-            return await interaction.followup.send(
-                embed=error_embed("SMB API key not set in Railway.")
-            )
-
+            return await interaction.followup.send(embed=error_embed("SMB API key not set in Railway."))
         try:
             all_services = await smb_api.list_services()
         except Exception as e:
             return await interaction.followup.send(embed=error_embed(f"Failed to fetch services from SMB API:\n{e}"))
-
         if not all_services:
             return await interaction.followup.send(embed=error_embed("SMB API returned no services. Check your API key."))
 
         platform_lower = platform.lower()
         added = 0
         updated = 0
-        skipped = 0
 
         for s in all_services:
             category = str(s.get("category") or "").strip()
-            name     = str(s.get("name") or "").strip()
-            rate     = str(s.get("rate") or "0")
-
+            name = str(s.get("name") or "").strip()
+            rate = str(s.get("rate") or "0")
             try:
                 service_id = int(s.get("service") or s.get("id") or 0)
-                min_qty    = int(s.get("min") or s.get("min_qty") or 1)
-                max_qty    = int(s.get("max") or s.get("max_qty") or 10000)
+                min_qty = int(s.get("min") or s.get("min_qty") or 1)
+                max_qty = int(s.get("max") or s.get("max_qty") or 10000)
             except (ValueError, TypeError):
-                skipped += 1
                 continue
-
             if not service_id or not name:
-                skipped += 1
                 continue
-
-            # Filter: only import if category contains the platform name
             if platform_lower not in category.lower():
                 continue
-
-            is_new = await db.smb_sync_service(
-                platform=platform,
-                category=category,
-                service_id=service_id,
-                name=name,
-                min_qty=min_qty,
-                max_qty=max_qty,
-                rate=rate,
-            )
+            is_new = await db.smb_sync_service(platform, category, service_id, name, min_qty, max_qty, rate)
             if is_new:
                 added += 1
             else:
@@ -107,14 +83,13 @@ class SmbAdmin(commands.Cog):
 
         total = added + updated
         embed = mango_embed(
-            f"SMB Sync — {platform}",
+            f"SMB Sync -- {platform}",
             f"{DIVIDER}\n\n"
             f"**{total}** services processed from the SMB API.\n\n"
-            f"New (disabled): **{added}**\n"
+            f"New (enabled): **{added}**\n"
             f"Updated (your settings preserved): **{updated}**\n"
             f"Skipped (no {platform} in category): **{len(all_services) - total}**\n\n"
-            f"New services are **disabled** by default.\n"
-            f"Use `/smbeditservice` to set `buyer_rate`, then `/smbtoggle` to enable the ones you want to sell."
+            f"Use `/smbeditservice` to set `buyer_rate`, then `/smbtogglecategory` or `/smbtoggleplatform` to manage visibility."
         )
         await interaction.followup.send(embed=embed)
 
@@ -183,7 +158,7 @@ class SmbAdmin(commands.Cog):
                 smb_bal = await db.smb_get_user_balance(s["discord_id"])
                 orders = await db.smb_get_user_orders(s["discord_id"])
                 desc += f"**{s['username']}**\n> SMB: **${smb_bal:.2f}**  •  {len(orders)} order(s)\n> `{s['discord_id']}`\n\n"
-            embed = mango_embed(f"SMB Sellers — Page {i}/{len(chunks)}", desc)
+            embed = mango_embed(f"SMB Sellers -- Page {i}/{len(chunks)}", desc)
             embed.set_footer(text=f"🥭 {len(sellers)} sellers  •  Page {i}/{len(chunks)}")
             pages.append(embed)
         view = SmbSellerView(interaction.user.id, sellers)
@@ -208,7 +183,7 @@ class SmbAdmin(commands.Cog):
             "Canceled": discord.Colour.red(),
         }
         embed = discord.Embed(
-            title=f"Order #{order_id} — {order_status}",
+            title=f"Order #{order_id} -- {order_status}",
             description=(
                 f"**Status:** {order_status}\n"
                 f"**Start count:** {status.get('start_count', '?')}\n"
@@ -268,7 +243,7 @@ class SmbAdmin(commands.Cog):
         rate="Your cost per 1,000 from SMB (hidden from buyers)",
         buyer_rate="What you charge buyers per 1,000 (shown to buyers)",
         link_hint="What to ask for in the link field (e.g. 'TikTok video URL')",
-        extra_field_label="Extra input label if service needs it (e.g. 'Usernames (1 per line)', 'Comments (1 per line)')",
+        extra_field_label="Extra input label if service needs it (e.g. 'Usernames (1 per line)')",
         extra_field_param="API parameter name for the extra field (e.g. 'usernames', 'comments')",
     )
     @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
@@ -285,7 +260,6 @@ class SmbAdmin(commands.Cog):
                 float(val)
             except ValueError:
                 return await interaction.response.send_message(embed=error_embed(f"`{label_name}` must be a number."), ephemeral=True)
-
         await db.smb_add_service(platform, category, service_id, name, min_qty, max_qty, rate,
                                   link_hint, buyer_rate, extra_field_label, extra_field_param)
         buyer_line = f"\nBuyer rate: **${buyer_rate}/1k**" if buyer_rate else "\nBuyer rate: *not set*"
@@ -309,7 +283,7 @@ class SmbAdmin(commands.Cog):
         min_qty="New minimum quantity",
         max_qty="New maximum quantity",
         link_hint="New link hint text",
-        extra_field_label="New extra field label (e.g. 'Usernames (1 per line)')",
+        extra_field_label="New extra field label",
         extra_field_param="New extra field API param (e.g. 'usernames', 'comments')",
         category="Move to a different category",
         platform="Move to a different platform",
@@ -332,14 +306,12 @@ class SmbAdmin(commands.Cog):
         service = await db.smb_get_service(service_id)
         if not service:
             return await interaction.response.send_message(embed=error_embed(f"No service with ID `{service_id}`."), ephemeral=True)
-
         for label_name, val in [("rate", rate), ("buyer_rate", buyer_rate)]:
             if val is not None:
                 try:
                     float(val)
                 except ValueError:
                     return await interaction.response.send_message(embed=error_embed(f"`{label_name}` must be a number."), ephemeral=True)
-
         updates = {}
         if name is not None: updates["name"] = name
         if rate is not None: updates["rate"] = rate
@@ -352,10 +324,8 @@ class SmbAdmin(commands.Cog):
         if category is not None: updates["category"] = category
         if platform is not None: updates["platform"] = platform
         if enabled is not None: updates["enabled"] = 1 if enabled == "enable" else 0
-
         if not updates:
             return await interaction.response.send_message(embed=error_embed("No fields to update — provide at least one value."), ephemeral=True)
-
         await db.smb_edit_service(service_id, **updates)
         updated = await db.smb_get_service(service_id)
         changed = "\n".join(f"> **{k}:** {v}" for k, v in updates.items())
@@ -365,10 +335,7 @@ class SmbAdmin(commands.Cog):
     # ── PLATFORM NOTES ────────────────────────────────────────────────────────
 
     @app_commands.command(name="smbplatformnotes", description="Set instructions shown to buyers when they select a platform (Admin)")
-    @app_commands.describe(
-        platform="Platform to set notes for",
-        notes="Instructions shown to buyers when they pick this platform",
-    )
+    @app_commands.describe(platform="Platform to set notes for", notes="Instructions shown to buyers when they pick this platform")
     @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
     async def smbplatformnotes(self, interaction: discord.Interaction, platform: str, notes: str):
         if await self._check(interaction):
@@ -418,11 +385,11 @@ class SmbAdmin(commands.Cog):
             buyer = f" > ${s['buyer_rate']}/1k" if s.get("buyer_rate") else ""
             hint = f"  •  *{s['link_hint']}*" if s.get("link_hint") else ""
             extra = f"  •  +{s['extra_field_label']}" if s.get("extra_field_label") else ""
-            lines.append(f"> {status} `{s['service_id']}`  **{s['name']}**  — ${s['rate']}/1k{buyer}  •  {s['min_qty']:,}–{s['max_qty']:,}{hint}{extra}")
+            lines.append(f"> {status} `{s['service_id']}`  **{s['name']}**  -- ${s['rate']}/1k{buyer}  •  {s['min_qty']:,}-{s['max_qty']:,}{hint}{extra}")
         chunks = paginate_items(lines, 15)
         pages = []
         for i, chunk in enumerate(chunks, 1):
-            embed = mango_embed(f"SMB Services — Page {i}/{len(chunks)}", "\n".join(chunk))
+            embed = mango_embed(f"SMB Services -- Page {i}/{len(chunks)}", "\n".join(chunk))
             embed.set_footer(text=f"🥭 {len(all_services)} total  •  Page {i}/{len(chunks)}")
             pages.append(embed)
         if len(pages) == 1:
@@ -456,24 +423,6 @@ class SmbAdmin(commands.Cog):
         embed = mango_embed("SMB API Balance", f"**${balance}** {currency}\n{DIVIDER_SHORT}\nYour SMBPanel account balance.")
         await interaction.followup.send(embed=embed)
 
-    # ── TOGGLE SERVICE ────────────────────────────────────────────────────────
-
-    @app_commands.command(name="smbtoggle", description="Enable or disable an SMB service (Admin)")
-    @app_commands.describe(service_id="The SMB service ID to toggle", status="Enable or disable")
-    @app_commands.choices(status=[
-        app_commands.Choice(name="Enable", value="enable"),
-        app_commands.Choice(name="Disable", value="disable"),
-    ])
-    async def smbtoggle(self, interaction: discord.Interaction, service_id: int, status: str):
-        if await self._check(interaction):
-            return
-        service = await db.smb_get_service(service_id)
-        if not service:
-            return await interaction.response.send_message(embed=error_embed(f"No service with ID `{service_id}`."), ephemeral=True)
-        await db.smb_set_enabled(service_id, status == "enable")
-        emoji = "🟢" if status == "enable" else "🔴"
-        await interaction.response.send_message(embed=success_embed(f"{emoji} **{service['name']}** **{status}d**."), ephemeral=True)
-
 
 # ── Seller orders view (shown in /smbsellers) ─────────────────────────────────
 
@@ -504,7 +453,7 @@ class SmbSellerView(discord.ui.View):
         desc = f"SMB Balance: **${smb_bal:.2f}**\n{DIVIDER}\n\n"
         for o in orders[:15]:
             desc += (
-                f"**#{o['smb_order_id']}** — {o['service_name'][:40]}\n"
+                f"**#{o['smb_order_id']}** -- {o['service_name'][:40]}\n"
                 f"> {o['platform']}  •  {o['quantity']:,}  •  ${o['buyer_cost']:.2f}  •  {o['status']}\n"
                 f"> {o['link'][:60]}\n"
                 f"> {o['created_at'][:16]}\n\n"
@@ -513,7 +462,9 @@ class SmbSellerView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-def _make_toggle_choices():
+# ── Toggle commands (separate cog to avoid command limit) ─────────────────────
+
+def _toggle_choices():
     return [
         app_commands.Choice(name="Enable", value="enable"),
         app_commands.Choice(name="Disable", value="disable"),
@@ -521,7 +472,6 @@ def _make_toggle_choices():
 
 
 class SmbToggleCommands(commands.Cog):
-    """Separate cog for toggle commands to avoid Discord's 25-command limit per cog."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -542,7 +492,7 @@ class SmbToggleCommands(commands.Cog):
 
     @app_commands.command(name="smbtoggle", description="Enable or disable a single SMB service (Admin)")
     @app_commands.describe(service_id="The SMB service ID", status="Enable or disable")
-    @app_commands.choices(status=_make_toggle_choices())
+    @app_commands.choices(status=_toggle_choices())
     async def smbtoggle(self, interaction: discord.Interaction, service_id: int, status: str):
         if await self._check(interaction):
             return
@@ -557,7 +507,7 @@ class SmbToggleCommands(commands.Cog):
     @app_commands.describe(platform="Platform", category="Category to toggle", status="Enable or disable")
     @app_commands.choices(
         platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS],
-        status=_make_toggle_choices(),
+        status=_toggle_choices(),
     )
     @app_commands.autocomplete(category=category_autocomplete)
     async def smbtogglecategory(self, interaction: discord.Interaction, platform: str, category: str, status: str):
@@ -576,7 +526,7 @@ class SmbToggleCommands(commands.Cog):
     @app_commands.describe(platform="Platform to toggle", status="Enable or disable")
     @app_commands.choices(
         platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS],
-        status=_make_toggle_choices(),
+        status=_toggle_choices(),
     )
     async def smbtoggleplatform(self, interaction: discord.Interaction, platform: str, status: str):
         if await self._check(interaction):
@@ -595,4 +545,5 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
 
