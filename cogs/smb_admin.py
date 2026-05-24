@@ -39,6 +39,85 @@ class SmbAdmin(commands.Cog):
         categories = await db.smb_get_categories_for_platform(platform) if platform else []
         return [app_commands.Choice(name=c, value=c) for c in categories if current.lower() in c.lower()][:25]
 
+    # ── SYNC SERVICES FROM SMB API ──────────────────────────────────────────
+
+    @app_commands.command(name="smbsync", description="Import all services from the SMB API for a platform (Admin)")
+    @app_commands.describe(
+        platform="Platform to sync — filters services where the category contains this name",
+    )
+    @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
+    async def smbsync(self, interaction: discord.Interaction, platform: str):
+        if await self._check(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        if not cfg.SMB_API_KEY:
+            return await interaction.followup.send(
+                embed=error_embed("SMB API key not set in Railway.")
+            )
+
+        try:
+            all_services = await smb_api.list_services()
+        except Exception as e:
+            return await interaction.followup.send(embed=error_embed(f"Failed to fetch services from SMB API:\n{e}"))
+
+        if not all_services:
+            return await interaction.followup.send(embed=error_embed("SMB API returned no services. Check your API key."))
+
+        platform_lower = platform.lower()
+        added = 0
+        updated = 0
+        skipped = 0
+
+        for s in all_services:
+            category = str(s.get("category") or "").strip()
+            name     = str(s.get("name") or "").strip()
+            rate     = str(s.get("rate") or "0")
+
+            try:
+                service_id = int(s.get("service") or s.get("id") or 0)
+                min_qty    = int(s.get("min") or s.get("min_qty") or 1)
+                max_qty    = int(s.get("max") or s.get("max_qty") or 10000)
+            except (ValueError, TypeError):
+                skipped += 1
+                continue
+
+            if not service_id or not name:
+                skipped += 1
+                continue
+
+            # Filter: only import if category contains the platform name
+            if platform_lower not in category.lower():
+                continue
+
+            is_new = await db.smb_sync_service(
+                platform=platform,
+                category=category,
+                service_id=service_id,
+                name=name,
+                min_qty=min_qty,
+                max_qty=max_qty,
+                rate=rate,
+            )
+            if is_new:
+                added += 1
+            else:
+                updated += 1
+
+        total = added + updated
+        embed = mango_embed(
+            f"SMB Sync — {platform}",
+            f"{DIVIDER}\n\n"
+            f"**{total}** services processed from the SMB API.\n\n"
+            f"New (disabled): **{added}**\n"
+            f"Updated (your settings preserved): **{updated}**\n"
+            f"Skipped (no {platform} in category): **{len(all_services) - total}**\n\n"
+            f"New services are **disabled** by default.\n"
+            f"Use `/smbeditservice` to set `buyer_rate`, then `/smbtoggle` to enable the ones you want to sell."
+        )
+        await interaction.followup.send(embed=embed)
+
     # ── SMB MAINTENANCE ───────────────────────────────────────────────────────
 
     @app_commands.command(name="smbmaintenance", description="Toggle the socials panel on/off for buyers (Admin)")
@@ -437,8 +516,3 @@ class SmbSellerView(discord.ui.View):
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
-
-
-
-
-
