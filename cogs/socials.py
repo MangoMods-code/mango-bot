@@ -265,6 +265,19 @@ class OrderModal(discord.ui.Modal):
         self.add_item(self.link_input)
         self.add_item(self.quantity_input)
 
+        # Add extra field if this service requires it (e.g. Usernames, Comments)
+        extra_label = (service.get("extra_field_label") or "").strip()
+        self.extra_input = None
+        if extra_label:
+            self.extra_input = discord.ui.TextInput(
+                label=extra_label[:45],
+                placeholder="Enter one per line",
+                style=discord.TextStyle.paragraph,
+                required=True,
+                max_length=2000,
+            )
+            self.add_item(self.extra_input)
+
     async def on_submit(self, interaction):
         try:
             quantity = int(self.quantity_input.value.replace(",", "").strip())
@@ -278,6 +291,7 @@ class OrderModal(discord.ui.Modal):
             )
 
         link = self.link_input.value.strip()
+        extra_value = self.extra_input.value.strip() if self.extra_input else ""
 
         if self.owner_mode:
             estimated_cost = (quantity / 1000) * float(s["rate"])
@@ -310,14 +324,14 @@ class OrderModal(discord.ui.Modal):
             desc += f"\n**Your SMB balance:** {balance_before_str}\n**After order:** {balance_after_str}\n"
         desc += "\nConfirm or cancel below."
 
-        view = ConfirmOrderView(interaction.user, s, link, quantity, estimated_cost, self.owner_mode, balance_before_str)
+        view = ConfirmOrderView(interaction.user, s, link, quantity, estimated_cost, self.owner_mode, balance_before_str, extra_value)
         await interaction.response.send_message(embed=make_embed("📋  Order Preview", desc), view=view, ephemeral=True)
 
 
 # ── STEP 6: Confirm ──────────────────────────────────────────────────────────
 
 class ConfirmOrderView(discord.ui.View):
-    def __init__(self, user, service, link, quantity, estimated_cost, owner_mode, smb_balance_before):
+    def __init__(self, user, service, link, quantity, estimated_cost, owner_mode, smb_balance_before, extra_value=""):
         super().__init__(timeout=60)
         self.user = user
         self.service = service
@@ -326,6 +340,7 @@ class ConfirmOrderView(discord.ui.View):
         self.estimated_cost = estimated_cost
         self.owner_mode = owner_mode
         self.smb_balance_before = smb_balance_before
+        self.extra_value = extra_value
 
     async def interaction_check(self, interaction):
         return interaction.user.id == self.user.id
@@ -346,7 +361,13 @@ class ConfirmOrderView(discord.ui.View):
             await db.smb_subtract_user_balance(str(self.user.id), self.estimated_cost)
 
         try:
-            result = await smb_api.add_order(service_id=self.service["service_id"], link=self.link, quantity=self.quantity)
+            result = await smb_api.add_order(
+                service_id=self.service["service_id"],
+                link=self.link,
+                quantity=self.quantity,
+                extra_param=(self.service.get("extra_field_param") or "").strip(),
+                extra_value=(self.extra_value or ""),
+            )
         except Exception as e:
             # Refund buyer if API call failed
             if not self.owner_mode:
@@ -521,6 +542,7 @@ class Socials(commands.Cog):
 async def setup(bot):
     # Global — no guild restriction so it appears in DMs for sellers
     await bot.add_cog(Socials(bot))
+
 
 
 
