@@ -158,6 +158,17 @@ def log_clear_keys(admin, count):
     embed.set_footer(text=f"Admin ID: {admin.id}")
     return embed
 
+def log_smb_balance_change(admin, target, action, amount, new_balance):
+    embed = discord.Embed(title="💳  SMB Balance Changed", color=discord.Colour.from_str("#1DA1F2"), timestamp=discord.utils.utcnow())
+    embed.add_field(name="Admin", value=f"{admin.mention}", inline=True)
+    embed.add_field(name="Target", value=f"{target.mention} (`{target.name}`)", inline=True)
+    embed.add_field(name="Action", value=action, inline=True)
+    embed.add_field(name="Amount", value=f"${amount:.2f}", inline=True)
+    embed.add_field(name="New SMB Balance", value=f"**${new_balance:.2f}**", inline=True)
+    embed.set_footer(text=f"Target ID: {target.id}")
+    return embed
+
+
 def log_announce(admin, message, sent, failed):
     embed = discord.Embed(title="📢  Announcement Sent", color=discord.Colour.from_str("#1ABC9C"), timestamp=discord.utils.utcnow())
     embed.add_field(name="Admin", value=f"{admin.mention}", inline=True)
@@ -226,5 +237,6 @@ class DismissView(View):
 
 def paginate_items(items, per_page=ITEMS_PER_PAGE):
     return [items[i:i + per_page] for i in range(0, len(items), per_page)]
+
 
 
