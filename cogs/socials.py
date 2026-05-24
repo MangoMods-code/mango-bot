@@ -94,8 +94,11 @@ class PlatformView(discord.ui.View):
             return
         view = CategoryView(self.author_id, platform, self.owner_mode)
         await view.build_select(categories)
+        # Show platform notes if set
+        notes = await db.smb_get_platform_notes(platform)
+        notes_line = f"\n\n⚠️ **{platform} Note:**\n{notes}" if notes else ""
         await interaction.response.edit_message(
-            embed=make_embed(f"{platform_label(platform)}  — Select Category", f"{DIVIDER}\n\nChoose a **category** to browse services."),
+            embed=make_embed(f"{platform_label(platform)}  — Select Category", f"{DIVIDER}\n\nChoose a **category** to browse services.{notes_line}"),
             view=view
         )
 
@@ -132,11 +135,8 @@ class CategoryView(discord.ui.View):
             return
         view = ServiceView(self.author_id, self.platform, category, self.owner_mode)
         await view.build_select(services)
-        # Show category notes if any
-        notes = await db.smb_get_category_notes(self.platform, category)
-        notes_line = f"\n\n⚠️ **Note:** {notes}" if notes else ""
         await interaction.response.edit_message(
-            embed=make_embed(f"{platform_label(self.platform)}  ›  {category}", f"{DIVIDER}\n\nChoose a **service** to place an order.{notes_line}"),
+            embed=make_embed(f"{platform_label(self.platform)}  ›  {category}", f"{DIVIDER}\n\nChoose a **service** to place an order."),
             view=view
         )
 
@@ -521,6 +521,7 @@ class Socials(commands.Cog):
 async def setup(bot):
     # Global — no guild restriction so it appears in DMs for sellers
     await bot.add_cog(Socials(bot))
+
 
 
 
