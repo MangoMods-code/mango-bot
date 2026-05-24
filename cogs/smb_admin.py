@@ -513,6 +513,86 @@ class SmbSellerView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+def _make_toggle_choices():
+    return [
+        app_commands.Choice(name="Enable", value="enable"),
+        app_commands.Choice(name="Disable", value="disable"),
+    ]
+
+
+class SmbToggleCommands(commands.Cog):
+    """Separate cog for toggle commands to avoid Discord's 25-command limit per cog."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def _check(self, interaction) -> bool:
+        if not interaction.guild:
+            await interaction.response.send_message(embed=server_only_error(), ephemeral=True)
+            return True
+        if not is_owner(interaction):
+            await interaction.response.send_message(embed=error_embed("Only the bot owner can use this command."), ephemeral=True)
+            return True
+        return False
+
+    async def category_autocomplete(self, interaction: discord.Interaction, current: str):
+        platform = interaction.namespace.platform or ""
+        categories = await db.smb_get_categories_for_platform(platform) if platform else []
+        return [app_commands.Choice(name=c, value=c) for c in categories if current.lower() in c.lower()][:25]
+
+    @app_commands.command(name="smbtoggle", description="Enable or disable a single SMB service (Admin)")
+    @app_commands.describe(service_id="The SMB service ID", status="Enable or disable")
+    @app_commands.choices(status=_make_toggle_choices())
+    async def smbtoggle(self, interaction: discord.Interaction, service_id: int, status: str):
+        if await self._check(interaction):
+            return
+        service = await db.smb_get_service(service_id)
+        if not service:
+            return await interaction.response.send_message(embed=error_embed(f"No service with ID `{service_id}`."), ephemeral=True)
+        await db.smb_set_enabled(service_id, status == "enable")
+        emoji = "🟢" if status == "enable" else "🔴"
+        await interaction.response.send_message(embed=success_embed(f"{emoji} **{service['name']}** {status}d."), ephemeral=True)
+
+    @app_commands.command(name="smbtogglecategory", description="Enable or disable all services in a category (Admin)")
+    @app_commands.describe(platform="Platform", category="Category to toggle", status="Enable or disable")
+    @app_commands.choices(
+        platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS],
+        status=_make_toggle_choices(),
+    )
+    @app_commands.autocomplete(category=category_autocomplete)
+    async def smbtogglecategory(self, interaction: discord.Interaction, platform: str, category: str, status: str):
+        if await self._check(interaction):
+            return
+        count = await db.smb_set_category_enabled(platform, category, status == "enable")
+        if count == 0:
+            return await interaction.response.send_message(embed=error_embed(f"No services found in **{platform}** > **{category}**."), ephemeral=True)
+        emoji = "🟢" if status == "enable" else "🔴"
+        await interaction.response.send_message(
+            embed=success_embed(f"{emoji} **{count}** service(s) in **{platform}** > **{category}** {status}d."),
+            ephemeral=True
+        )
+
+    @app_commands.command(name="smbtoggleplatform", description="Enable or disable ALL services for an entire platform (Admin)")
+    @app_commands.describe(platform="Platform to toggle", status="Enable or disable")
+    @app_commands.choices(
+        platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS],
+        status=_make_toggle_choices(),
+    )
+    async def smbtoggleplatform(self, interaction: discord.Interaction, platform: str, status: str):
+        if await self._check(interaction):
+            return
+        count = await db.smb_set_platform_enabled(platform, status == "enable")
+        if count == 0:
+            return await interaction.response.send_message(embed=error_embed(f"No services found for **{platform}**."), ephemeral=True)
+        emoji = "🟢" if status == "enable" else "🔴"
+        await interaction.response.send_message(
+            embed=success_embed(f"{emoji} All **{count}** **{platform}** service(s) {status}d."),
+            ephemeral=True
+        )
+
+
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
+    await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
