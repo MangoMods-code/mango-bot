@@ -38,16 +38,22 @@ async def list_services() -> list:
     return result if isinstance(result, list) else []
 
 
-async def add_order(service_id: int, link: str, quantity: int) -> dict:
-    """Place an order.
+async def add_order(service_id: int, link: str, quantity: int, extra_param: str = "", extra_value: str = "") -> dict:
+    """
+    Place an order.
+    extra_param / extra_value handle services like custom comments or usernames
+    that need an additional field beyond link and quantity.
     Returns: {"order": 23501}
     """
-    return await _post({
+    payload = {
         "action": "add",
         "service": service_id,
         "link": link,
         "quantity": quantity,
-    })
+    }
+    if extra_param and extra_value:
+        payload[extra_param] = extra_value
+    return await _post(payload)
 
 
 async def get_order_status(order_id: int) -> dict:
