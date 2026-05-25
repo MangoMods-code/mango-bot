@@ -405,6 +405,58 @@ class SmbAdmin(commands.Cog):
         else:
             await interaction.response.send_message(embed=pages[0], view=PaginatorView(pages, interaction.user.id), ephemeral=True)
 
+    # ── MASS BUYER RATE ───────────────────────────────────────────────────────
+
+    @app_commands.command(name="smbsetcategoryrate", description="Set the same buyer rate for all services in a category (Admin)")
+    @app_commands.describe(
+        platform="Platform",
+        category="Category to update",
+        buyer_rate="Buyer rate per 1,000 to set on every service in this category",
+    )
+    @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
+    @app_commands.autocomplete(category=category_autocomplete)
+    async def smbsetcategoryrate(self, interaction: discord.Interaction, platform: str, category: str, buyer_rate: str):
+        if await self._check(interaction):
+            return
+        try:
+            float(buyer_rate)
+        except ValueError:
+            return await interaction.response.send_message(embed=error_embed("`buyer_rate` must be a number."), ephemeral=True)
+        count = await db.smb_set_category_buyer_rate(platform, category, buyer_rate)
+        if count == 0:
+            return await interaction.response.send_message(embed=error_embed(f"No services found in **{platform}** > **{category}**."), ephemeral=True)
+        await interaction.response.send_message(
+            embed=success_embed(f"Set buyer rate **${buyer_rate}/1k** on **{count}** service(s) in **{platform}** > **{category}**."),
+            ephemeral=True
+        )
+
+    @app_commands.command(name="smbsetmultiplier", description="Set buyer rate as a multiplier of your SMB cost (Admin)")
+    @app_commands.describe(
+        platform="Platform to apply multiplier to",
+        multiplier="Multiplier — e.g. 2 means buyer pays 2x your cost. 0.50 cost becomes 1.00 buyer rate",
+        category="Optional: limit to a specific category only",
+    )
+    @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
+    @app_commands.autocomplete(category=category_autocomplete)
+    async def smbsetmultiplier(self, interaction: discord.Interaction, platform: str, multiplier: float, category: str = None):
+        if await self._check(interaction):
+            return
+        if multiplier <= 0:
+            return await interaction.response.send_message(embed=error_embed("Multiplier must be greater than 0."), ephemeral=True)
+        count = await db.smb_set_multiplier(platform, multiplier, category)
+        if count == 0:
+            return await interaction.response.send_message(embed=error_embed("No services found."), ephemeral=True)
+        scope = f"**{platform}** > **{category}**" if category else f"all of **{platform}**"
+        await interaction.response.send_message(
+            embed=success_embed(
+                f"Applied **{multiplier}x** multiplier to **{count}** service(s) in {scope}."
+                f"\n{DIVIDER_SHORT}\n"
+                f"Each service's buyer rate is now set to its SMB cost x {multiplier}.\n"
+                f"e.g. $0.50 cost → **${0.50 * multiplier:.5f}/1k** buyer rate"
+            ),
+            ephemeral=True
+        )
+
     # ── SMB BALANCE CHECK ─────────────────────────────────────────────────────
 
     @app_commands.command(name="smbbalance", description="Check SMB API balance or a user's SMB balance (Admin)")
@@ -560,7 +612,3 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
-
-
-
-
