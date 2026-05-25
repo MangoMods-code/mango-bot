@@ -80,7 +80,8 @@ class SmbAdmin(commands.Cog):
                 continue
             if not service_id or not name:
                 continue
-            if platform_lower not in category.lower():
+            # Match if platform name appears in category name OR service name
+            if platform_lower not in category.lower() and platform_lower not in name.lower():
                 continue
             is_new = await db.smb_sync_service(platform, category, service_id, name, min_qty, max_qty, rate)
             if is_new:
@@ -559,6 +560,7 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
 
 
 
