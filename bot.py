@@ -25,6 +25,7 @@ class MangoBot(commands.Bot):
             "cogs.seller",
             "cogs.socials",
             "cogs.smb_admin",
+            "cogs.smb_owner",
         ]
         for cog in cogs:
             await self.load_extension(cog)
