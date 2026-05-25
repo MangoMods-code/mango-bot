@@ -617,6 +617,45 @@ async def smb_set_enabled(service_id, enabled):
         await db.execute("UPDATE smb_services SET enabled = ? WHERE service_id = ?", (1 if enabled else 0, service_id))
         await db.commit()
 
+async def smb_set_category_buyer_rate(platform: str, category: str, buyer_rate: str) -> int:
+    """Set the same buyer_rate on every service in a platform+category."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE smb_services SET buyer_rate = ? WHERE platform = ? AND category = ?",
+            (buyer_rate, platform, category)
+        )
+        await db.commit()
+        return cursor.rowcount
+
+async def smb_set_platform_buyer_rate(platform: str, buyer_rate: str) -> int:
+    """Set the same buyer_rate on every service in a platform."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE smb_services SET buyer_rate = ? WHERE platform = ?",
+            (buyer_rate, platform)
+        )
+        await db.commit()
+        return cursor.rowcount
+
+async def smb_set_multiplier(platform: str, multiplier: float, category: str = None) -> int:
+    """
+    Set buyer_rate = round(rate * multiplier, 5) for services.
+    Optionally filter to a specific category.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        if category:
+            cursor = await db.execute(
+                "UPDATE smb_services SET buyer_rate = CAST(ROUND(CAST(rate AS REAL) * ?, 5) AS TEXT) WHERE platform = ? AND category = ?",
+                (multiplier, platform, category)
+            )
+        else:
+            cursor = await db.execute(
+                "UPDATE smb_services SET buyer_rate = CAST(ROUND(CAST(rate AS REAL) * ?, 5) AS TEXT) WHERE platform = ?",
+                (multiplier, platform)
+            )
+        await db.commit()
+        return cursor.rowcount
+
 async def smb_set_category_enabled(platform: str, category: str, enabled: bool) -> int:
     """Enable or disable all services in a platform+category. Returns the count affected."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -689,3 +728,4 @@ async def smb_get_platform_notes(platform: str) -> str:
         cursor = await db.execute("SELECT notes FROM smb_platform_notes WHERE platform = ?", (platform,))
         row = await cursor.fetchone()
         return row[0] if row else ""
+
