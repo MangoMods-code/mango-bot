@@ -135,6 +135,24 @@ async def init_db():
                 notes    TEXT NOT NULL DEFAULT ''
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS dm_announcements (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                title      TEXT NOT NULL,
+                message    TEXT NOT NULL,
+                kind       TEXT NOT NULL DEFAULT 'general',
+                sent_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS dm_announcement_messages (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                announcement_id INTEGER NOT NULL,
+                discord_id      TEXT NOT NULL,
+                message_id      TEXT NOT NULL,
+                FOREIGN KEY (announcement_id) REFERENCES dm_announcements(id) ON DELETE CASCADE
+            )
+        """)
 
         # Column migrations
         for col, definition in [
@@ -729,5 +747,52 @@ async def smb_get_platform_notes(platform: str) -> str:
         cursor = await db.execute("SELECT notes FROM smb_platform_notes WHERE platform = ?", (platform,))
         row = await cursor.fetchone()
         return row[0] if row else ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DM ANNOUNCEMENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def create_announcement(title: str, message: str, kind: str = "general") -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO dm_announcements (title, message, kind) VALUES (?, ?, ?)",
+            (title, message, kind)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+async def store_announcement_message(announcement_id: int, discord_id: str, message_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO dm_announcement_messages (announcement_id, discord_id, message_id) VALUES (?, ?, ?)",
+            (announcement_id, discord_id, message_id)
+        )
+        await db.commit()
+
+async def get_recent_announcements(limit: int = 10) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM dm_announcements ORDER BY sent_at DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+async def get_announcement_messages(announcement_id: int) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM dm_announcement_messages WHERE announcement_id = ?", (announcement_id,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+async def update_announcement(announcement_id: int, title: str, message: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE dm_announcements SET title = ?, message = ? WHERE id = ?",
+            (title, message, announcement_id)
+        )
+        await db.commit()
+
 
 
