@@ -58,7 +58,9 @@ class SmbAdmin(commands.Cog):
         platform_lower = platform.lower()
         to_remove = [
             s for s in all_services
-            if s["platform"] == platform and platform_lower not in s["category"].lower()
+            if s["platform"] == platform
+            and platform_lower not in s["category"].lower()
+            and platform_lower not in s["name"].lower()
         ]
 
         if not to_remove:
@@ -116,8 +118,8 @@ class SmbAdmin(commands.Cog):
                 continue
             if not service_id or not name:
                 continue
-            # Only import if the platform name appears in the category name
-            if platform_lower not in category.lower():
+            # Import if platform name appears in category name OR service name
+            if platform_lower not in category.lower() and platform_lower not in name.lower():
                 continue
             is_new = await db.smb_sync_service(platform, category, service_id, name, min_qty, max_qty, rate)
             if is_new:
@@ -648,5 +650,6 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
 
 
