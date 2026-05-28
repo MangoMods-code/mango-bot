@@ -46,6 +46,42 @@ class SmbAdmin(commands.Cog):
         except Exception:
             return []
 
+    @app_commands.command(name="smbclean", description="Remove mismatched services from a platform (Admin)")
+    @app_commands.describe(platform="Platform to clean — removes services where category name does not contain the platform name")
+    @app_commands.choices(platform=[app_commands.Choice(name=p, value=p) for p in PLATFORMS])
+    async def smbclean(self, interaction: discord.Interaction, platform: str):
+        if await self._check(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        all_services = await db.smb_get_all_services()
+        platform_lower = platform.lower()
+        to_remove = [
+            s for s in all_services
+            if s["platform"] == platform and platform_lower not in s["category"].lower()
+        ]
+
+        if not to_remove:
+            return await interaction.followup.send(
+                embed=mango_embed(f"SMB Clean -- {platform}", "Nothing to clean. All categories look correct.")
+            )
+
+        for s in to_remove:
+            await db.smb_remove_service(s["service_id"])
+
+        # Show which categories were removed
+        removed_cats = sorted(set(s["category"] for s in to_remove))
+        cat_list = "\n".join(f"> {c[:80]}" for c in removed_cats[:20])
+        if len(removed_cats) > 20:
+            cat_list += f"\n> ...and {len(removed_cats) - 20} more"
+
+        embed = success_embed(
+            f"Removed **{len(to_remove)}** service(s) from **{platform}** in **{len(removed_cats)}** bad category/categories.\n"
+            f"{DIVIDER_SHORT}\n"
+            f"Categories removed:\n{cat_list}"
+        )
+        await interaction.followup.send(embed=embed)
+
     # ── SYNC ─────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="smbsync", description="Import all services from the SMB API for a platform (Admin)")
@@ -612,4 +648,5 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
 
