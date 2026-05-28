@@ -13,6 +13,14 @@ from helpers import (
     log_smb_balance_change, log_announce,
 )
 
+# Generic categories that contain real services for multiple platforms.
+# These are included in sync even though their name doesn't contain the platform.
+GENERIC_CATEGORIES = [
+    "always working services",
+    "smb new cheapest services",
+    "smb exclusive",
+]
+
 PLATFORMS = [
     "Instagram", "TikTok", "YouTube", "Facebook", "Telegram",
     "Twitter", "Twitch", "Kick", "WhatsApp", "Snapchat",
@@ -58,16 +66,18 @@ class SmbAdmin(commands.Cog):
         platform_lower = platform.lower()
         other_platforms = [p.lower() for p in PLATFORMS if p.lower() != platform_lower]
 
-        to_remove = [
-            s for s in all_services
-            if s["platform"] == platform
-            and (
-                # Category belongs to a different known platform
-                any(op in s["category"].lower() for op in other_platforms)
-                # OR neither category nor service name mentions this platform
-                or (platform_lower not in s["category"].lower() and platform_lower not in s["name"].lower())
-            )
-        ]
+        def should_remove(s):
+            cat = s["category"].lower()
+            name = s["name"].lower()
+            is_generic = any(g in cat for g in GENERIC_CATEGORIES)
+            if is_generic:
+                # Keep only if service name contains platform
+                return platform_lower not in name
+            else:
+                # Keep only if category contains platform (and not a different platform)
+                return platform_lower not in cat
+
+        to_remove = [s for s in all_services if s["platform"] == platform and should_remove(s)]
 
         if not to_remove:
             return await interaction.followup.send(
@@ -128,13 +138,21 @@ class SmbAdmin(commands.Cog):
 
             category_lower = category.lower()
 
-            # Skip if the category belongs to a different known platform
-            if any(op in category_lower for op in other_platforms):
+            # Check if this is a whitelisted generic category
+            is_generic = any(g in category_lower for g in GENERIC_CATEGORIES)
+
+            # Skip if category belongs to a different known platform
+            if not is_generic and any(op in category_lower for op in other_platforms):
                 continue
 
-            # Import if platform name is in category OR service name
-            if platform_lower not in category_lower and platform_lower not in name.lower():
-                continue
+            # For generic categories: only import if service name contains platform
+            # For all others: only import if category name contains platform
+            if is_generic:
+                if platform_lower not in name.lower():
+                    continue
+            else:
+                if platform_lower not in category_lower:
+                    continue
             is_new = await db.smb_sync_service(platform, category, service_id, name, min_qty, max_qty, rate)
             if is_new:
                 added += 1
@@ -664,6 +682,7 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
 
 
 
