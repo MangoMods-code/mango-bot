@@ -56,11 +56,17 @@ class SmbAdmin(commands.Cog):
 
         all_services = await db.smb_get_all_services()
         platform_lower = platform.lower()
+        other_platforms = [p.lower() for p in PLATFORMS if p.lower() != platform_lower]
+
         to_remove = [
             s for s in all_services
             if s["platform"] == platform
-            and platform_lower not in s["category"].lower()
-            and platform_lower not in s["name"].lower()
+            and (
+                # Category belongs to a different known platform
+                any(op in s["category"].lower() for op in other_platforms)
+                # OR neither category nor service name mentions this platform
+                or (platform_lower not in s["category"].lower() and platform_lower not in s["name"].lower())
+            )
         ]
 
         if not to_remove:
@@ -103,6 +109,7 @@ class SmbAdmin(commands.Cog):
             return await interaction.followup.send(embed=error_embed("SMB API returned no services. Check your API key."))
 
         platform_lower = platform.lower()
+        other_platforms = [p.lower() for p in PLATFORMS if p.lower() != platform_lower]
         added = 0
         updated = 0
 
@@ -118,8 +125,15 @@ class SmbAdmin(commands.Cog):
                 continue
             if not service_id or not name:
                 continue
-            # Import if platform name appears in category name OR service name
-            if platform_lower not in category.lower() and platform_lower not in name.lower():
+
+            category_lower = category.lower()
+
+            # Skip if the category belongs to a different known platform
+            if any(op in category_lower for op in other_platforms):
+                continue
+
+            # Import if platform name is in category OR service name
+            if platform_lower not in category_lower and platform_lower not in name.lower():
                 continue
             is_new = await db.smb_sync_service(platform, category, service_id, name, min_qty, max_qty, rate)
             if is_new:
@@ -650,6 +664,7 @@ async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(SmbAdmin(bot), guild=guild)
     await bot.add_cog(SmbToggleCommands(bot), guild=guild)
+
 
 
 
