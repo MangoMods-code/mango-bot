@@ -17,6 +17,7 @@ class MangoBot(commands.Bot):
 
     async def setup_hook(self):
         await db.init_db()
+        await db.cert_init_tables()
         print("  ✅ Database initialized")
 
         cogs = [
@@ -26,6 +27,8 @@ class MangoBot(commands.Bot):
             "cogs.socials",
             "cogs.smb_admin",
             "cogs.smb_owner",
+            "cogs.certs",
+            "cogs.cert_admin",
         ]
         for cog in cogs:
             await self.load_extension(cog)
