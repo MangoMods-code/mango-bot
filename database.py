@@ -795,4 +795,144 @@ async def update_announcement(announcement_id: int, title: str, message: str):
         await db.commit()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CERT PLANS + ORDERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# cert_plans stores your markup pricing for each Nekoo plan.
+# plan_id comes from the Nekoo API (dynamic, may change).
+# seller_price is what sellers pay from their internal balance.
+async def cert_init_tables():
+    """Create cert tables if they don't exist. Called from init_db."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cert_plans (
+                plan_id      TEXT PRIMARY KEY,
+                plan_name    TEXT NOT NULL,
+                nekoo_cost   REAL NOT NULL DEFAULT 0.0,
+                seller_price INTEGER NOT NULL DEFAULT 0,
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cert_orders (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id            TEXT NOT NULL,
+                udid               TEXT NOT NULL,
+                certificate_id     TEXT NOT NULL,
+                plan_id            TEXT NOT NULL,
+                plan_name          TEXT NOT NULL,
+                nekoo_cost         REAL NOT NULL DEFAULT 0.0,
+                seller_cost        INTEGER NOT NULL DEFAULT 0,
+                already_registered INTEGER NOT NULL DEFAULT 0,
+                created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (user_id) REFERENCES users(discord_id)
+            )
+        """)
+        await db.commit()
+
+
+# ── CERT PLAN HELPERS ──────────────────────────────────────────────────────────
+
+async def cert_upsert_plan(plan_id: str, plan_name: str, nekoo_cost: float,
+                            seller_price: int = None, enabled: bool = None):
+    """Insert or update a cert plan. Preserves seller_price and enabled if not provided."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT * FROM cert_plans WHERE plan_id = ?", (plan_id,))
+        existing = await cursor.fetchone()
+        if existing:
+            sp = seller_price if seller_price is not None else existing[3]
+            en = (1 if enabled else 0) if enabled is not None else existing[4]
+            await db.execute("""
+                UPDATE cert_plans SET plan_name=?, nekoo_cost=?, seller_price=?, enabled=?, updated_at=datetime('now')
+                WHERE plan_id=?
+            """, (plan_name, nekoo_cost, sp, en, plan_id))
+        else:
+            sp = seller_price if seller_price is not None else 0
+            en = 1 if enabled is None else (1 if enabled else 0)
+            await db.execute("""
+                INSERT INTO cert_plans (plan_id, plan_name, nekoo_cost, seller_price, enabled)
+                VALUES (?, ?, ?, ?, ?)
+            """, (plan_id, plan_name, nekoo_cost, sp, en))
+        await db.commit()
+
+
+async def cert_get_all_plans() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM cert_plans ORDER BY nekoo_cost ASC")
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def cert_get_enabled_plans() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM cert_plans WHERE enabled=1 ORDER BY nekoo_cost ASC")
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def cert_get_plan(plan_id: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM cert_plans WHERE plan_id=?", (plan_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def cert_set_price(plan_id: str, seller_price: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE cert_plans SET seller_price=?, updated_at=datetime('now') WHERE plan_id=?",
+            (seller_price, plan_id)
+        )
+        await db.commit()
+
+
+async def cert_set_enabled(plan_id: str, enabled: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE cert_plans SET enabled=?, updated_at=datetime('now') WHERE plan_id=?",
+            (1 if enabled else 0, plan_id)
+        )
+        await db.commit()
+
+
+# ── CERT ORDER HELPERS ──────────────────────────────────────────────────────────
+
+async def cert_record_order(user_id: str, udid: str, certificate_id: str,
+                             plan_id: str, plan_name: str, nekoo_cost: float,
+                             seller_cost: int, already_registered: bool) -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("""
+            INSERT INTO cert_orders
+            (user_id, udid, certificate_id, plan_id, plan_name, nekoo_cost, seller_cost, already_registered)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, udid, certificate_id, plan_id, plan_name, nekoo_cost,
+               seller_cost, 1 if already_registered else 0))
+        await db.commit()
+        cursor = await db.execute("SELECT * FROM cert_orders WHERE rowid=last_insert_rowid()")
+        return dict(await cursor.fetchone())
+
+
+async def cert_get_user_orders(discord_id: str) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM cert_orders WHERE user_id=? ORDER BY created_at DESC LIMIT 50",
+            (discord_id,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def cert_get_all_orders(limit: int = 100) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM cert_orders ORDER BY created_at DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+
 
