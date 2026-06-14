@@ -208,6 +208,12 @@ async def is_maintenance():
 async def set_maintenance(enabled):
     await set_setting("maintenance", "1" if enabled else "0")
 
+async def is_cert_maintenance():
+    return (await get_setting("cert_maintenance", "0")) == "1"
+
+async def set_cert_maintenance(enabled):
+    await set_setting("cert_maintenance", "1" if enabled else "0")
+
 async def get_all_buyer_groups():
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT key, value FROM settings WHERE key LIKE 'buyergroup_%' AND value != '' ORDER BY key")
@@ -809,6 +815,7 @@ async def cert_init_tables():
             CREATE TABLE IF NOT EXISTS cert_plans (
                 plan_id      TEXT PRIMARY KEY,
                 plan_name    TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
                 nekoo_cost   REAL NOT NULL DEFAULT 0.0,
                 seller_price INTEGER NOT NULL DEFAULT 0,
                 enabled      INTEGER NOT NULL DEFAULT 1,
@@ -830,6 +837,11 @@ async def cert_init_tables():
                 FOREIGN KEY (user_id) REFERENCES users(discord_id)
             )
         """)
+        # Migration: add display_name if not present
+        try:
+            await db.execute("ALTER TABLE cert_plans ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
         await db.commit()
 
 
@@ -885,6 +897,16 @@ async def cert_set_price(plan_id: str, seller_price: int):
         await db.execute(
             "UPDATE cert_plans SET seller_price=?, updated_at=datetime('now') WHERE plan_id=?",
             (seller_price, plan_id)
+        )
+        await db.commit()
+
+
+async def cert_set_display_name(plan_id: str, display_name: str):
+    """Set a custom display name for a plan. Shown to sellers instead of the Nekoo plan name."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE cert_plans SET display_name=?, updated_at=datetime('now') WHERE plan_id=?",
+            (display_name.strip(), plan_id)
         )
         await db.commit()
 
