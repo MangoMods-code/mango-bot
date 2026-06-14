@@ -33,11 +33,65 @@ class CertAdmin(commands.Cog):
         try:
             plans = await db.cert_get_all_plans()
             return [
-                app_commands.Choice(name=f"{p['plan_name']} ({p['plan_id'][:12]})", value=p["plan_id"])
-                for p in plans if current.lower() in p["plan_name"].lower()
+                app_commands.Choice(
+                    name=f"{p.get('display_name') or p['plan_name']} ({p['plan_id'][:12]})",
+                    value=p["plan_id"]
+                )
+                for p in plans if current.lower() in (p.get("display_name") or p["plan_name"]).lower()
             ][:25]
         except Exception:
             return []
+
+    # ── CERT MAINTENANCE ──────────────────────────────────────────────────────
+
+    @app_commands.command(name="certmaintenance", description="Toggle cert gen on/off for sellers (Admin)")
+    async def certmaintenance(self, interaction: discord.Interaction):
+        if await self._check(interaction):
+            return
+        current = await db.is_cert_maintenance()
+        new_state = not current
+        await db.set_cert_maintenance(new_state)
+        if new_state:
+            embed = mango_embed(
+                "Cert Gen OFF",
+                f"Cert generation is now **disabled** for sellers.\n{DIVIDER_SHORT}\nRun `/certmaintenance` again to re-enable.\n\nNote: this only affects the cert panel. Key generation is unaffected."
+            )
+        else:
+            embed = mango_embed(
+                "Cert Gen ON",
+                f"Cert generation is now **enabled** for sellers.\n{DIVIDER_SHORT}\nSellers can use `/certgen` again."
+            )
+        await interaction.response.send_message(embed=embed)
+
+    # ── SET DISPLAY NAME ──────────────────────────────────────────────────────
+
+    @app_commands.command(name="certsetname", description="Set a custom display name for a cert plan (Admin)")
+    @app_commands.describe(
+        plan="The plan to rename",
+        display_name="What sellers will see (e.g. '1 Year iPhone Plan') — leave blank to reset to Nekoo name",
+    )
+    @app_commands.autocomplete(plan=plan_autocomplete)
+    async def certsetname(self, interaction: discord.Interaction, plan: str, display_name: str = ""):
+        if await self._check(interaction):
+            return
+        plan_row = await db.cert_get_plan(plan)
+        if not plan_row:
+            return await interaction.response.send_message(
+                embed=error_embed("Plan not found. Run `/certsyncplans` first."), ephemeral=True
+            )
+        await db.cert_set_display_name(plan, display_name)
+        if display_name:
+            embed = success_embed(
+                f"Display name updated.\n{DIVIDER_SHORT}\n"
+                f"Nekoo name: *{plan_row['plan_name']}*\n"
+                f"Sellers now see: **{display_name}**"
+            )
+        else:
+            embed = success_embed(
+                f"Display name cleared.\n{DIVIDER_SHORT}\n"
+                f"Sellers will see the Nekoo name: **{plan_row['plan_name']}**"
+            )
+        await interaction.response.send_message(embed=embed)
 
     # ── SYNC PLANS FROM NEKOO API ─────────────────────────────────────────────
 
@@ -76,10 +130,11 @@ class CertAdmin(commands.Cog):
         desc = (
             f"{DIVIDER}\n\n"
             f"**{len(plans)}** plan(s) synced from Nekoo.\n\n"
-            f"New: **{added}**\nUpdated: **{updated}**\n\n"
-            f"Use `/certsetprice` to set seller prices, then `/certtoggleplan` to enable them."
+            f"New: **{added}**\nUpdated (display names preserved): **{updated}**\n\n"
+            f"Use `/certsetname` to rename plans for sellers.\n"
+            f"Use `/certsetprice` to set prices, then `/certtoggleplan` to enable."
         )
-        await interaction.followup.send(embed=mango_embed("📜  Plans Synced", desc))
+        await interaction.followup.send(embed=mango_embed("Plans Synced", desc))
 
     # ── SET SELLER PRICE ──────────────────────────────────────────────────────
 
@@ -94,15 +149,18 @@ class CertAdmin(commands.Cog):
 
         plan_row = await db.cert_get_plan(plan)
         if not plan_row:
-            return await interaction.response.send_message(embed=error_embed(f"Plan `{plan}` not found. Run `/certsyncplans` first."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=error_embed("Plan not found. Run `/certsyncplans` first."), ephemeral=True
+            )
 
+        shown_name = plan_row.get("display_name") or plan_row["plan_name"]
         old_price = plan_row["seller_price"]
         await db.cert_set_price(plan, price)
 
         embed = success_embed(
-            f"**{plan_row['plan_name']}**\n{DIVIDER_SHORT}\n"
+            f"**{shown_name}**\n{DIVIDER_SHORT}\n"
             f"{old_price} bal -> **{price}** bal per cert\n"
-            f"*(Nekoo cost: ${plan_row['nekoo_cost']})*"
+            f"Nekoo cost: ${plan_row['nekoo_cost']}"
         )
         await interaction.response.send_message(embed=embed)
 
@@ -120,12 +178,13 @@ class CertAdmin(commands.Cog):
             return
         plan_row = await db.cert_get_plan(plan)
         if not plan_row:
-            return await interaction.response.send_message(embed=error_embed(f"Plan not found."), ephemeral=True)
+            return await interaction.response.send_message(embed=error_embed("Plan not found."), ephemeral=True)
 
+        shown_name = plan_row.get("display_name") or plan_row["plan_name"]
         await db.cert_set_enabled(plan, status == "enable")
         emoji = "🟢" if status == "enable" else "🔴"
         await interaction.response.send_message(
-            embed=success_embed(f"{emoji} **{plan_row['plan_name']}** {status}d.")
+            embed=success_embed(f"{emoji} **{shown_name}** {status}d.")
         )
 
     # ── VIEW ALL PLANS ────────────────────────────────────────────────────────
@@ -135,23 +194,31 @@ class CertAdmin(commands.Cog):
         if await self._check(interaction):
             return
 
+        cert_maint = await db.is_cert_maintenance()
         plans = await db.cert_get_all_plans()
+
         if not plans:
             return await interaction.response.send_message(
-                embed=mango_embed("📜  Cert Plans", "No plans yet. Run `/certsyncplans` to import from Nekoo."),
+                embed=mango_embed("Cert Plans", "No plans yet. Run `/certsyncplans` to import from Nekoo."),
                 ephemeral=True,
             )
 
-        desc = f"{DIVIDER}\n\n"
+        maint_line = "\n🔧 **Cert maintenance is ON** — sellers cannot use cert commands." if cert_maint else ""
+        desc = f"{DIVIDER}{maint_line}\n\n"
+
         for p in plans:
             status = "🟢" if p["enabled"] else "🔴"
+            shown_name = p.get("display_name") or p["plan_name"]
+            name_info = shown_name
+            if p.get("display_name") and p["display_name"] != p["plan_name"]:
+                name_info += f"\n> *Nekoo: {p['plan_name']}*"
             desc += (
-                f"{status} **{p['plan_name']}**\n"
-                f"> Nekoo cost: **${p['nekoo_cost']}**  •  Seller price: **{p['seller_price']}** bal\n"
+                f"{status} **{name_info}**\n"
+                f"> Nekoo cost: **${p['nekoo_cost']}**  Seller price: **{p['seller_price']}** bal\n"
                 f"> ID: `{p['plan_id']}`\n\n"
             )
 
-        await interaction.response.send_message(embed=mango_embed("📜  All Cert Plans", desc), ephemeral=True)
+        await interaction.response.send_message(embed=mango_embed("All Cert Plans", desc), ephemeral=True)
 
     # ── NEKOO BALANCE ─────────────────────────────────────────────────────────
 
@@ -170,7 +237,7 @@ class CertAdmin(commands.Cog):
             return await interaction.followup.send(embed=error_embed(f"Failed:\n`{e}`"))
 
         embed = mango_embed(
-            "📜  Nekoo Balance",
+            "Nekoo Balance",
             f"**${me.get('balance', '?')}**\n{DIVIDER_SHORT}\n"
             f"Account: {me.get('name', '?')} (`{me.get('username', '?')}`)\n"
             f"API enabled: {'Yes' if me.get('api_enabled') else 'No'}"
@@ -187,9 +254,7 @@ class CertAdmin(commands.Cog):
 
         orders = await db.cert_get_all_orders(50)
         if not orders:
-            return await interaction.followup.send(
-                embed=mango_embed("📜  Cert Orders", "No orders yet.")
-            )
+            return await interaction.followup.send(embed=mango_embed("Cert Orders", "No orders yet."))
 
         chunks = paginate_items(orders, 8)
         pages = []
@@ -202,11 +267,11 @@ class CertAdmin(commands.Cog):
                     f"> User: `{o['user_id']}`\n"
                     f"> UDID: `{o['udid'][:20]}...`\n"
                     f"> Cert: `{o['certificate_id']}`\n"
-                    f"> Cost: {o['seller_cost']} bal *(Nekoo: ${o['nekoo_cost']})*\n"
+                    f"> Cost: {o['seller_cost']} bal (Nekoo: ${o['nekoo_cost']})\n"
                     f"> {o['created_at'][:16]}\n\n"
                 )
-            embed = mango_embed(f"📜  Cert Orders — Page {i}/{len(chunks)}", desc)
-            embed.set_footer(text=f"🥭 {len(orders)} total  •  Page {i}/{len(chunks)}")
+            embed = mango_embed(f"Cert Orders -- Page {i}/{len(chunks)}", desc)
+            embed.set_footer(text=f"🥭 {len(orders)} total  Page {i}/{len(chunks)}")
             pages.append(embed)
 
         if len(pages) == 1:
@@ -232,14 +297,14 @@ class CertAdmin(commands.Cog):
             err = str(e)
             if "not_found" in err:
                 return await interaction.followup.send(
-                    embed=mango_embed("📜  Not Found", f"No certificate found for UDID:\n`{udid.strip()}`")
+                    embed=mango_embed("Not Found", f"No certificate found for UDID:\n`{udid.strip()}`")
                 )
             return await interaction.followup.send(embed=error_embed(f"API error:\n`{err}`"))
 
         certs = result.get("certificates", [])
         if not certs:
             return await interaction.followup.send(
-                embed=mango_embed("📜  Not Found", f"No certs for `{udid.strip()}`")
+                embed=mango_embed("Not Found", f"No certs for `{udid.strip()}`")
             )
 
         desc = f"**UDID:** `{udid.strip()}`\n{DIVIDER}\n\n"
@@ -248,14 +313,14 @@ class CertAdmin(commands.Cog):
             from cogs.certs import seconds_to_days
             desc += (
                 f"{status_icon} **{c.get('id', '?')}**\n"
-                f"> Status: {c.get('status')}  •  Valid: {'Yes' if c.get('provision_valid') else 'No'}\n"
+                f"> Status: {c.get('status')}  Valid: {'Yes' if c.get('provision_valid') else 'No'}\n"
                 f"> Expired: {'Yes' if c.get('expired') else 'No'}\n"
                 f"> Warranty: {seconds_to_days(c.get('warranty_remaining_seconds', 0))}\n"
                 f"> Plan: {c.get('plan', 'N/A')}\n"
                 f"> Cert: {c.get('pname', 'N/A')[:60]}\n\n"
             )
 
-        await interaction.followup.send(embed=mango_embed("📜  Cert Lookup", desc))
+        await interaction.followup.send(embed=mango_embed("Cert Lookup", desc))
 
 
 async def setup(bot):
