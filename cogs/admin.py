@@ -84,17 +84,39 @@ class Admin(commands.Cog):
 
     # ── API BALANCE CHECK ─────────────────────────────────────────────────────
 
-    @app_commands.command(name="apibalance", description="Check your current balance on all external key APIs (Admin)")
+    @app_commands.command(name="apibalance", description="Check your current balance on all external APIs (Admin)")
     async def apibalance(self, interaction: discord.Interaction):
         if await self._admin_check(interaction):
             return
         await interaction.response.defer(ephemeral=True)
-        api_variants = await db.get_all_api_variants()
-        if not api_variants:
-            return await interaction.followup.send(
-                embed=mango_embed("API Balance", "No API variants have a balance URL configured.\n\nUse `/setapibalance` to set it up.")
-            )
+
         description = f"{DIVIDER}\n\n"
+
+        # Aegis balance
+        try:
+            import aegis as aegis_api
+            aegis_data = await aegis_api.get_balance()
+            if aegis_data:
+                bal = aegis_data.get("data", {}).get("balance") or aegis_data.get("balance", "?")
+                description += f"**Aegis Online**\n> Balance: **{bal}**\n\n"
+            else:
+                description += "**Aegis Online**\n> Could not fetch balance\n\n"
+        except Exception as e:
+            description += f"**Aegis Online**\n> Error: `{e}`\n\n"
+
+        # Nekoo cert gen balance
+        try:
+            import nekoo
+            if cfg.NEKOO_API_KEY:
+                me = await nekoo.get_me()
+                description += f"**Nekoo (Certs)**\n> Balance: **${me.get('balance', '?')}**\n\n"
+            else:
+                description += "**Nekoo (Certs)**\n> API key not set in Railway\n\n"
+        except Exception as e:
+            description += f"**Nekoo (Certs)**\n> Error: `{e}`\n\n"
+
+        # Generic API variants with balance URLs
+        api_variants = await db.get_all_api_variants()
         for v in api_variants:
             label = f"{v['product_name']} -- {v['name']}"
             try:
@@ -109,9 +131,10 @@ class Admin(commands.Cog):
                 if balance is None:
                     description += f"**{label}**\n> Balance not found at path `{v['api_balance_path']}`\n\n"
                 else:
-                    description += f"**{label}**\n> Balance: **{balance}**  •  ID: `{v['id']}`\n\n"
+                    description += f"**{label}**\n> Balance: **{balance}**\n\n"
             except Exception as e:
                 description += f"**{label}**\n> Failed: `{e}`\n\n"
+
         await interaction.followup.send(embed=mango_embed("External API Balances", description))
 
     # ── DM ANNOUNCE ───────────────────────────────────────────────────────────
@@ -134,10 +157,8 @@ class Admin(commands.Cog):
         announce_embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}")
         announce_embed.timestamp = discord.utils.utcnow()
 
-        # Store announcement record
         announcement_id = await db.create_announcement(title, message, kind="general")
 
-        # Build recipient list — sellers + owner (if not already a seller)
         recipients = list(sellers)
         owner_id = str(cfg.OWNER_ID)
         if not any(str(s["discord_id"]) == owner_id for s in sellers):
@@ -196,7 +217,7 @@ class Admin(commands.Cog):
             description=message,
             color=discord.Colour(int(cfg.EMBED_COLOR, 16)),
         )
-        new_embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}  •  (edited)")
+        new_embed.set_footer(text=f"🥭 {cfg.BOT_FOOTER}  (edited)")
         new_embed.timestamp = discord.utils.utcnow()
 
         edited = 0
@@ -316,9 +337,9 @@ class Admin(commands.Cog):
                 keys = await db.get_keys_by_user(u["discord_id"])
                 icon = "🏷️" if u["is_seller"] else "👤"
                 status = "Seller" if u["is_seller"] else "User"
-                desc += f"{icon}  **{u['username']}** -- *{status}*\n> Balance: **{u['balance']}**  •  Keys: **{len(keys)}**\n> `{u['discord_id']}`\n\n"
+                desc += f"{icon}  **{u['username']}** -- *{status}*\n> Balance: **{u['balance']}**  Keys: **{len(keys)}**\n> `{u['discord_id']}`\n\n"
             embed = mango_embed(f"All Users -- Page {i}/{len(chunks)}", desc)
-            embed.set_footer(text=f"🥭 {len(users)} total  •  Page {i}/{len(chunks)}")
+            embed.set_footer(text=f"🥭 {len(users)} total  Page {i}/{len(chunks)}")
             pages.append(embed)
         if len(pages) == 1:
             await interaction.response.send_message(embed=pages[0], ephemeral=True)
@@ -409,6 +430,3 @@ class ConfirmClearView(discord.ui.View):
 async def setup(bot):
     guild = discord.Object(id=int(cfg.GUILD_ID))
     await bot.add_cog(Admin(bot), guild=guild)
-
-
-
