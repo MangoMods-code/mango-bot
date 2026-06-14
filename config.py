@@ -32,6 +32,12 @@ AEGIS_BASE_URL   = _get("AEGIS_BASE_URL", "https://clientarea.aegisonline.site")
 # SMBPanel API key — set this in Railway env vars
 SMB_API_KEY = _get("SMB_API_KEY")
 
+# Nekoo cert gen API key — set this in Railway env vars
+NEKOO_API_KEY = _get("NEKOO_API_KEY")
+
+# Telegram tutorial link for cert readme
+CERT_TUTORIAL = "https://t.me/MangoCertSteps"
+
 # Database path
 DATA_DIR = _get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 DB_PATH  = os.path.join(DATA_DIR, "bot.db")
