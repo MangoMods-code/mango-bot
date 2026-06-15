@@ -892,7 +892,7 @@ async def cert_get_plan(plan_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def cert_set_price(plan_id: str, seller_price: int):
+async def cert_set_price(plan_id: str, seller_price: float):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE cert_plans SET seller_price=?, updated_at=datetime('now') WHERE plan_id=?",
