@@ -2,6 +2,7 @@
 # Sellers run /certgen, pick a plan, enter their UDID, get a zip with .p12 + .mobileprovision + readme.
 
 import io
+import re
 import base64
 import zipfile
 import discord
@@ -379,6 +380,112 @@ class Certs(commands.Cog):
         embed = mango_embed(f"Your Certs ({len(orders)} total)", desc)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.response.send_message(embed=embed, ephemeral=interaction.guild is not None)
+
+
+    # ── UDID CHECK ────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="udidcheck", description="Validate a UDID and check for existing certs")
+    @app_commands.describe(udid="Your device UDID to validate (optional)")
+    async def udidcheck(self, interaction: discord.Interaction, udid: str = None):
+        if requires_dm(interaction):
+            return await interaction.response.send_message(embed=dm_only_error(), ephemeral=True)
+
+        user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
+        if not user["is_seller"] and not is_owner(interaction):
+            return await interaction.response.send_message(
+                embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+
+        # UDID format patterns
+        # Old style: 40 hex chars
+        # New style: 8-16-hex format like 00008030-001A2B3C4D5E6F78
+        UDID_OLD = re.compile(r'^[0-9a-fA-F]{40}
+)
+        UDID_NEW = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{16}
+)
+
+        # Pull custom steps from DB
+        custom_steps = await db.get_setting("udid_steps", default="")
+        default_steps = (
+            "1. On your iPhone/iPad go to **Settings > General > VPN & Device Management**\n"
+            "2. If no profile is there, visit **udid.tech** on Safari on your device\n"
+            "3. Tap **Find My UDID** and install the profile when prompted\n"
+            "4. Go back to Settings, tap the new profile, and copy the UDID shown\n"
+            "5. Paste it into `/certgen` to generate your certificate"
+        )
+        steps = custom_steps if custom_steps else default_steps
+
+        embed = mango_embed("UDID Check", "")
+
+        # If UDID provided, validate it
+        if udid:
+            udid = udid.strip()
+            valid_format = bool(UDID_OLD.match(udid) or UDID_NEW.match(udid))
+
+            if not valid_format:
+                embed.description = (
+                    f"**UDID:** `{udid}`\n"
+                    f"**Format:** INVALID\n\n"
+                    f"A UDID should be either:\n"
+                    f"> 40 hex characters: `a1b2c3d4e5f6...` (40 chars)\n"
+                    f"> New format: `00008030-001A2B3C4D5E6F78`\n\n"
+                    f"Double-check you copied the full UDID."
+                )
+                embed.color = discord.Colour.red()
+                return await interaction.followup.send(embed=embed)
+
+            # Format is valid — check Nekoo for existing cert
+            cert_status = ""
+            if cfg.NEKOO_API_KEY:
+                try:
+                    result = await nekoo.get_certificate(udid=udid)
+                    certs = result.get("certificates", [])
+                    active = next((c for c in certs if c.get("status") == "signed" and c.get("provision_valid")), None)
+                    if active:
+                        warranty = seconds_to_days(active.get("warranty_remaining_seconds", 0))
+                        cert_status = (
+                            f"\n{DIVIDER_SHORT}\n"
+                            f"**Existing cert found:**\n"
+                            f"> Status: Active\n"
+                            f"> Warranty left: {warranty}\n"
+                            f"> Plan: {active.get('plan', 'N/A')}\n"
+                            f"> If you re-register this UDID it will be **free** (cert already exists)."
+                        )
+                    elif certs:
+                        cert_status = f"\n{DIVIDER_SHORT}\nA cert exists for this UDID but may be expired or invalid."
+                    else:
+                        cert_status = f"\n{DIVIDER_SHORT}\nNo existing cert found — ready to register."
+                except Exception as e:
+                    if "not_found" in str(e):
+                        cert_status = f"\n{DIVIDER_SHORT}\nNo existing cert found — ready to register."
+                    else:
+                        cert_status = f"\n{DIVIDER_SHORT}\nCould not check for existing cert."
+
+            embed.description = (
+                f"**UDID:** `{udid}`\n"
+                f"**Format:** Valid\n"
+                f"{cert_status}"
+            )
+            embed.color = discord.Colour.green()
+        else:
+            embed.description = "No UDID provided. Here's how to find yours:"
+            embed.color = discord.Colour(int(cfg.EMBED_COLOR, 16))
+
+        # Always show steps and link
+        embed.add_field(
+            name="How to find your UDID",
+            value=steps,
+            inline=False,
+        )
+        embed.add_field(
+            name="UDID Tool",
+            value="[udid.tech](https://udid.tech) — open this in **Safari on your device**",
+            inline=False,
+        )
+
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot):
