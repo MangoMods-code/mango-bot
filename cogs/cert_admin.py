@@ -155,9 +155,9 @@ class CertAdmin(commands.Cog):
     # ── SET SELLER PRICE ──────────────────────────────────────────────────────
 
     @app_commands.command(name="certsetprice", description="Set the seller price for a cert plan (Admin)")
-    @app_commands.describe(plan="The plan to update", price="Internal balance cost for sellers")
+    @app_commands.describe(plan="The plan to update", price="Seller price in balance (decimals allowed, e.g. 1.50)")
     @app_commands.autocomplete(plan=plan_autocomplete)
-    async def certsetprice(self, interaction: discord.Interaction, plan: str, price: int):
+    async def certsetprice(self, interaction: discord.Interaction, plan: str, price: float):
         if await self._check(interaction):
             return
         if price < 0:
