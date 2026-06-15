@@ -13,7 +13,7 @@ import nekoo
 from helpers import (
     mango_embed, error_embed, success_embed, is_owner,
     requires_dm, dm_only_error, DIVIDER, DIVIDER_SHORT,
-    send_log,
+    PaginatorView, paginate_items, send_log,
 )
 
 CERT_TUTORIAL = cfg.CERT_TUTORIAL
@@ -109,6 +109,134 @@ def log_cert_gen(user, plan_name, udid, cert_id, seller_cost, already_registered
     return embed
 
 
+def build_cert_pages(udid: str, certs: list) -> list[discord.Embed]:
+    """Build paginated embeds showing all certs for a UDID."""
+    chunks = paginate_items(certs, 5)
+    pages = []
+    for i, chunk in enumerate(chunks, 1):
+        desc = f"**UDID:** `{udid}`\n{DIVIDER}\n\n"
+        for c in chunk:
+            status_icon = "🟢" if c.get("status") == "signed" and c.get("provision_valid") and not c.get("expired") else "🔴"
+            warranty = seconds_to_days(c.get("warranty_remaining_seconds", 0))
+            desc += (
+                f"{status_icon} **{c.get('id', '?')}**\n"
+                f"> Status: {c.get('status', 'N/A')}  Valid: {'Yes' if c.get('provision_valid') else 'No'}  Expired: {'Yes' if c.get('expired') else 'No'}\n"
+                f"> Warranty left: {warranty}\n"
+                f"> Plan: {c.get('plan', 'N/A')}\n\n"
+            )
+        embed = mango_embed(f"Certificate Status -- Page {i}/{len(chunks)}", desc)
+        embed.set_footer(text=f"🥭 {len(certs)} cert(s) found for this UDID  Page {i}/{len(chunks)}")
+        pages.append(embed)
+    return pages
+
+
+# ── Cert download view ────────────────────────────────────────────────────────
+
+class CertDownloadView(discord.ui.View):
+    """Shows a dropdown of all certs + a Download button for the selected one."""
+
+    def __init__(self, author_id: int, udid: str, certs: list, pages: list):
+        super().__init__(timeout=300)
+        self.author_id = author_id
+        self.udid = udid
+        self.certs = {c["id"]: c for c in certs}
+        self.selected_cert_id = None
+        self.page = 0
+        self.pages = pages
+
+        # Build dropdown (max 25)
+        options = []
+        for c in certs[:25]:
+            status_icon = "🟢" if c.get("status") == "signed" and c.get("provision_valid") and not c.get("expired") else "🔴"
+            warranty = seconds_to_days(c.get("warranty_remaining_seconds", 0))
+            label = f"{status_icon} {c.get('id', '?')[:50]}"
+            desc = f"{c.get('status', '?')}  Warranty: {warranty}  Plan: {c.get('plan', 'N/A')[:20]}"
+            options.append(discord.SelectOption(label=label[:100], value=c["id"], description=desc[:100]))
+
+        select = discord.ui.Select(placeholder="Select a cert to download...", options=options, row=0)
+        select.callback = self.on_cert_select
+        self.add_item(select)
+
+        # Download button (disabled until a cert is selected)
+        self.download_btn = discord.ui.Button(
+            label="Download Selected Cert",
+            style=discord.ButtonStyle.success,
+            emoji="⬇️",
+            disabled=True,
+            row=1,
+        )
+        self.download_btn.callback = self.on_download
+        self.add_item(self.download_btn)
+
+        # Page buttons if multiple pages
+        if len(pages) > 1:
+            prev_btn = discord.ui.Button(label="Prev", style=discord.ButtonStyle.secondary, row=1)
+            prev_btn.callback = self.prev_page
+            self.add_item(prev_btn)
+
+            next_btn = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary, row=1)
+            next_btn.callback = self.next_page
+            self.add_item(next_btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(embed=error_embed("This panel isn't for you."), ephemeral=True)
+            return False
+        return True
+
+    async def on_cert_select(self, interaction: discord.Interaction):
+        self.selected_cert_id = interaction.data["values"][0]
+        self.download_btn.disabled = False
+        await interaction.response.edit_message(view=self)
+
+    async def on_download(self, interaction: discord.Interaction):
+        if not self.selected_cert_id:
+            return await interaction.response.send_message(embed=error_embed("No cert selected."), ephemeral=True)
+
+        cert = self.certs.get(self.selected_cert_id)
+        if not cert:
+            return await interaction.response.send_message(embed=error_embed("Cert not found."), ephemeral=True)
+
+        # If we don't have the p12 data (shouldn't happen but just in case), fetch it
+        if not cert.get("p12") and cfg.NEKOO_API_KEY:
+            await interaction.response.defer(ephemeral=True)
+            try:
+                result = await nekoo.get_certificate(certificate_id=self.selected_cert_id)
+                certs_fresh = result.get("certificates", [])
+                cert = next((c for c in certs_fresh if c.get("id") == self.selected_cert_id), cert)
+            except Exception:
+                pass
+        else:
+            await interaction.response.defer(ephemeral=True)
+
+        plan_name = cert.get("plan", "Certificate")
+        # Try to get display name from DB
+        plan_row = await db.cert_get_plan(plan_name)
+        display_name = plan_shown_name(plan_row) if plan_row else plan_name
+
+        zip_buf = build_cert_zip(cert, display_name)
+        zip_file = discord.File(zip_buf, filename=f"MangoMods_Cert_{self.udid[:8]}.zip")
+
+        warranty = seconds_to_days(cert.get("warranty_remaining_seconds", 0))
+        embed = mango_embed(
+            "Certificate Download",
+            f"**Cert ID:** `{self.selected_cert_id}`\n"
+            f"**UDID:** `{self.udid}`\n"
+            f"**Warranty left:** {warranty}\n"
+            f"**P12 Password:** `{cert.get('p12_password', '1')}`\n\n"
+            f"Tutorial: {CERT_TUTORIAL}"
+        )
+        await interaction.followup.send(embed=embed, file=zip_file, ephemeral=True)
+
+    async def prev_page(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        await interaction.response.edit_message(embed=self.pages[self.page], view=self)
+
+    async def next_page(self, interaction: discord.Interaction):
+        self.page = min(len(self.pages) - 1, self.page + 1)
+        await interaction.response.edit_message(embed=self.pages[self.page], view=self)
+
+
 class Certs(commands.Cog):
 
     def __init__(self, bot):
@@ -173,7 +301,7 @@ class Certs(commands.Cog):
             if "insufficient_balance" in err:
                 return await interaction.followup.send(embed=error_embed("Nekoo account is out of balance. Contact the owner."))
             if "invalid_udid" in err:
-                return await interaction.followup.send(embed=error_embed(f"Invalid UDID format: `{udid.strip()}`\n\nUse `/udidcheck` to validate your UDID."))
+                return await interaction.followup.send(embed=error_embed(f"Invalid UDID: `{udid.strip()}`\n\nUse `/udidcheck` for instructions on finding your UDID."))
             if "plan_locked" in err:
                 return await interaction.followup.send(embed=error_embed("This plan is not available. Contact the owner."))
             return await interaction.followup.send(embed=error_embed(f"Nekoo API error:\n`{err}`"))
@@ -239,7 +367,7 @@ class Certs(commands.Cog):
 
     # ── CERT CHECK ────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="certcheck", description="Check the status of a certificate by UDID")
+    @app_commands.command(name="certcheck", description="Check all certificates for a UDID")
     @app_commands.describe(udid="The device UDID to look up")
     async def certcheck(self, interaction: discord.Interaction, udid: str):
         if requires_dm(interaction):
@@ -251,7 +379,9 @@ class Certs(commands.Cog):
 
         user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
         if not user["is_seller"] and not owner_mode:
-            return await interaction.response.send_message(embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True
+            )
 
         if not cfg.NEKOO_API_KEY:
             return await interaction.response.send_message(embed=error_embed("Nekoo API key not configured."), ephemeral=True)
@@ -263,31 +393,20 @@ class Certs(commands.Cog):
         except Exception as e:
             err = str(e)
             if "not_found" in err:
-                return await interaction.followup.send(embed=mango_embed("No Certificate Found", f"No certificate found for UDID:\n`{udid.strip()}`"))
+                return await interaction.followup.send(
+                    embed=mango_embed("No Certificate Found", f"No certificates found for UDID:\n`{udid.strip()}`")
+                )
             return await interaction.followup.send(embed=error_embed(f"API error:\n`{err}`"))
 
         certs = result.get("certificates", [])
         if not certs:
-            return await interaction.followup.send(embed=mango_embed("No Certificate Found", f"No certificates found for UDID:\n`{udid.strip()}`"))
+            return await interaction.followup.send(
+                embed=mango_embed("No Certificate Found", f"No certificates found for UDID:\n`{udid.strip()}`")
+            )
 
-        active = next((c for c in certs if c.get("status") == "signed" and c.get("provision_valid")), certs[0])
-        status_icon = "🟢" if active.get("status") == "signed" and active.get("provision_valid") else "🔴"
-        warranty_days = seconds_to_days(active.get("warranty_remaining_seconds", 0))
-
-        embed = mango_embed(
-            "Certificate Status",
-            f"**UDID:** `{udid.strip()}`\n{DIVIDER}\n\n"
-            f"**Status:** {status_icon} {active.get('status', 'N/A')}\n"
-            f"**Valid:** {'Yes' if active.get('provision_valid') else 'No'}\n"
-            f"**Expired:** {'Yes' if active.get('expired') else 'No'}\n"
-            f"**Warranty left:** {warranty_days}\n"
-            f"**Cert ID:** `{active.get('id', 'N/A')}`\n"
-            f"**Plan:** {active.get('plan', 'N/A')}\n"
-            f"**Cert name:** {active.get('pname', 'N/A')}"
-        )
-        if len(certs) > 1:
-            embed.set_footer(text=f"🥭 {len(certs)} cert(s) found for this UDID -- showing most recent active")
-        await interaction.followup.send(embed=embed)
+        pages = build_cert_pages(udid.strip(), certs)
+        view = CertDownloadView(interaction.user.id, udid.strip(), certs, pages)
+        await interaction.followup.send(embed=pages[0], view=view)
 
     # ── CERT PLANS ────────────────────────────────────────────────────────────
 
@@ -302,11 +421,15 @@ class Certs(commands.Cog):
 
         user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
         if not user["is_seller"] and not owner_mode:
-            return await interaction.response.send_message(embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True
+            )
 
         plans = await db.cert_get_enabled_plans()
         if not plans:
-            return await interaction.response.send_message(embed=mango_embed("Cert Plans", "No cert plans available right now."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=mango_embed("Cert Plans", "No cert plans available right now."), ephemeral=True
+            )
 
         desc = f"{DIVIDER}\n\n"
         for p in plans:
@@ -329,7 +452,9 @@ class Certs(commands.Cog):
 
         user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
         if not user["is_seller"] and not owner_mode:
-            return await interaction.response.send_message(embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True
+            )
 
         orders = await db.cert_get_user_orders(str(interaction.user.id))
         if not orders:
@@ -352,85 +477,45 @@ class Certs(commands.Cog):
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.response.send_message(embed=embed, ephemeral=interaction.guild is not None)
 
-    # ── UDID CHECK ────────────────────────────────────────────────────────────
+    # ── UDID CHECK (instructions only) ───────────────────────────────────────
 
-    @app_commands.command(name="udidcheck", description="Validate a UDID and check for existing certs")
-    @app_commands.describe(udid="Your device UDID to validate (optional -- leave blank to see instructions)")
-    async def udidcheck(self, interaction: discord.Interaction, udid: str = None):
+    @app_commands.command(name="udidcheck", description="How to find your device UDID")
+    async def udidcheck(self, interaction: discord.Interaction):
         if requires_dm(interaction):
             return await interaction.response.send_message(embed=dm_only_error(), ephemeral=True)
 
         user = await db.ensure_user(str(interaction.user.id), interaction.user.name)
         if not user["is_seller"] and not is_owner(interaction):
-            return await interaction.response.send_message(embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=error_embed("You need **seller permissions** to use this command."), ephemeral=True
+            )
 
-        await interaction.response.defer(ephemeral=interaction.guild is not None)
-
-        # Pull custom steps from DB, fall back to default
         custom_steps = await db.get_setting("udid_steps", default="")
         default_steps = (
-            "1. On your iPhone/iPad go to **Settings > General > VPN & Device Management**\n"
-            "2. If no profile is there, visit **udid.tech** on Safari on your device\n"
+            "1. On your iPhone/iPad open **Safari** (must be Safari, not Chrome)\n"
+            "2. Go to **udid.tech**\n"
             "3. Tap **Find My UDID** and install the profile when prompted\n"
-            "4. Go back to Settings, tap the new profile, and copy the UDID shown\n"
-            "5. Paste it into `/certgen` to generate your certificate"
+            "4. Go to **Settings > General > VPN & Device Management**\n"
+            "5. Tap the new profile and copy the **UDID** shown\n"
+            "6. Paste it into `/certgen` to generate your certificate"
         )
         steps = custom_steps if custom_steps else default_steps
 
-        embed = mango_embed("UDID Check", "")
-
-        if udid:
-            udid = udid.strip()
-            valid_format = bool(UDID_OLD.match(udid) or UDID_NEW.match(udid))
-
-            if not valid_format:
-                embed.description = (
-                    f"**UDID:** `{udid}`\n"
-                    f"**Format:** INVALID\n\n"
-                    f"A UDID should be either:\n"
-                    f"> 40 hex characters (no dashes)\n"
-                    f"> New format: `00008030-001A2B3C4D5E6F78`\n\n"
-                    f"Double-check you copied the full UDID."
-                )
-                embed.color = discord.Colour.red()
-            else:
-                # Valid format -- check Nekoo for existing cert
-                cert_status = ""
-                if cfg.NEKOO_API_KEY:
-                    try:
-                        result = await nekoo.get_certificate(udid=udid)
-                        certs = result.get("certificates", [])
-                        active = next((c for c in certs if c.get("status") == "signed" and c.get("provision_valid")), None)
-                        if active:
-                            warranty = seconds_to_days(active.get("warranty_remaining_seconds", 0))
-                            cert_status = (
-                                f"\n{DIVIDER_SHORT}\n"
-                                f"**Existing cert found:**\n"
-                                f"> Status: Active\n"
-                                f"> Warranty left: {warranty}\n"
-                                f"> Plan: {active.get('plan', 'N/A')}\n"
-                                f"> Re-registering this UDID will be **free**."
-                            )
-                        elif certs:
-                            cert_status = f"\n{DIVIDER_SHORT}\nA cert exists for this UDID but may be expired or invalid."
-                        else:
-                            cert_status = f"\n{DIVIDER_SHORT}\nNo existing cert -- ready to register."
-                    except Exception as e:
-                        if "not_found" in str(e):
-                            cert_status = f"\n{DIVIDER_SHORT}\nNo existing cert -- ready to register."
-                        else:
-                            cert_status = f"\n{DIVIDER_SHORT}\nCould not check for existing cert."
-
-                embed.description = f"**UDID:** `{udid}`\n**Format:** Valid{cert_status}"
-                embed.color = discord.Colour.green()
-        else:
-            embed.description = "No UDID provided. Here's how to find yours:"
-            embed.color = discord.Colour(int(cfg.EMBED_COLOR, 16))
-
-        embed.add_field(name="How to find your UDID", value=steps, inline=False)
-        embed.add_field(name="UDID Tool", value="[udid.tech](https://udid.tech) -- open in **Safari on your device**", inline=False)
-
-        await interaction.followup.send(embed=embed)
+        embed = mango_embed(
+            "How to Find Your UDID",
+            f"{steps}\n\n{DIVIDER_SHORT}"
+        )
+        embed.add_field(
+            name="UDID Tool",
+            value="[udid.tech](https://udid.tech) -- open in **Safari on your device**",
+            inline=False,
+        )
+        embed.add_field(
+            name="Already have your UDID?",
+            value="Use `/certcheck udid:YOUR_UDID` to check for existing certs\nUse `/certgen` to generate a new cert",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=interaction.guild is not None)
 
 
 async def setup(bot):
