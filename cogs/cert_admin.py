@@ -42,6 +42,22 @@ class CertAdmin(commands.Cog):
         except Exception:
             return []
 
+    # ── SET UDID STEPS ──────────────────────────────────────────────────────
+
+    @app_commands.command(name="setudidsteps", description="Set the instructions shown in /udidcheck (Admin)")
+    @app_commands.describe(steps="Step-by-step instructions for finding a UDID. Use \\n for new lines.")
+    async def setudidsteps(self, interaction: discord.Interaction, steps: str):
+        if await self._check(interaction):
+            return
+        # Replace literal \n with actual newlines
+        steps = steps.replace("\\n", "\n")
+        await db.set_setting("udid_steps", steps)
+        embed = success_embed(
+            f"UDID check steps updated.\n{DIVIDER_SHORT}\n"
+            f"Sellers will see these when they run `/udidcheck`."
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     # ── CERT MAINTENANCE ──────────────────────────────────────────────────────
 
     @app_commands.command(name="certmaintenance", description="Toggle cert gen on/off for sellers (Admin)")
