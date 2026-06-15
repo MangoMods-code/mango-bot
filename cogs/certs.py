@@ -110,22 +110,40 @@ def log_cert_gen(user, plan_name, udid, cert_id, seller_cost, already_registered
 
 
 def build_cert_pages(udid: str, certs: list) -> list[discord.Embed]:
-    """Build paginated embeds showing all certs for a UDID."""
-    chunks = paginate_items(certs, 5)
+    """Build paginated embeds showing all certs for a UDID — one cert per page."""
     pages = []
-    for i, chunk in enumerate(chunks, 1):
-        desc = f"**UDID:** `{udid}`\n{DIVIDER}\n\n"
-        for c in chunk:
-            status_icon = "🟢" if c.get("status") == "signed" and c.get("provision_valid") and not c.get("expired") else "🔴"
-            warranty = seconds_to_days(c.get("warranty_remaining_seconds", 0))
-            desc += (
-                f"{status_icon} **{c.get('id', '?')}**\n"
-                f"> Status: {c.get('status', 'N/A')}  Valid: {'Yes' if c.get('provision_valid') else 'No'}  Expired: {'Yes' if c.get('expired') else 'No'}\n"
-                f"> Warranty left: {warranty}\n"
-                f"> Plan: {c.get('plan', 'N/A')}\n\n"
-            )
-        embed = mango_embed(f"Certificate Status -- Page {i}/{len(chunks)}", desc)
-        embed.set_footer(text=f"🥭 {len(certs)} cert(s) found for this UDID  Page {i}/{len(chunks)}")
+    for i, c in enumerate(certs, 1):
+        status_icon = "🟢" if c.get("status") == "signed" and c.get("provision_valid") and not c.get("expired") else "🔴"
+        warranty = seconds_to_days(c.get("warranty_remaining_seconds", 0))
+
+        # Format registered_at nicely
+        registered_raw = c.get("registered_at", "N/A")
+        registered = registered_raw[:19].replace("T", " ") if registered_raw and registered_raw != "N/A" else "N/A"
+
+        # warranty_time is a unix timestamp
+        warranty_ts = c.get("warranty_time")
+        expiry_str = f"<t:{warranty_ts}:D>" if warranty_ts else "N/A"
+
+        desc = (
+            f"**UDID:** `{udid}`\n"
+            f"{DIVIDER}\n\n"
+            f"**Cert ID:** `{c.get('id', 'N/A')}`\n"
+            f"**Status:** {status_icon} {c.get('status', 'N/A')}\n"
+            f"**Provision valid:** {'Yes' if c.get('provision_valid') else 'No'}\n"
+            f"**Expired:** {'Yes' if c.get('expired') else 'No'}\n"
+            f"**Plan:** {c.get('plan', 'N/A')}\n"
+            f"**Cert name:** {c.get('pname', 'N/A')}\n"
+            f"**P12 password:** `{c.get('p12_password', '1')}`\n"
+            f"**Registered:** {registered}\n"
+            f"**Warranty expires:** {expiry_str}\n"
+            f"**Warranty remaining:** {warranty}\n"
+            f"**Dev cert included:** {'Yes' if c.get('devp12') else 'No'}\n"
+        )
+        embed = mango_embed(
+            f"Certificate {i}/{len(certs)}",
+            desc
+        )
+        embed.set_footer(text=f"🥭 {i} of {len(certs)} cert(s) for this UDID")
         pages.append(embed)
     return pages
 
