@@ -377,6 +377,11 @@ class Seller(commands.Cog):
                 "`/products` — See products & variants\n"
                 "`/buyergroups` — Your buyer group links\n"
                 "`/socials` — Social media order panel\n"
+                "'/certgen' - Generate A Cert\n"
+                "'/certplans' - View Certs Available For Gen\n"
+                "'/certcheck' - Checks UDID For Active Certs\n"
+                "'/mycerts' - View The Certs Youve Gened"
+                "'/udidcheck' - Shows You How To Check Your UDID\n"
                 "`/help` — This message"
             ),
             inline=False,
