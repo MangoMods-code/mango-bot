@@ -380,7 +380,7 @@ class Seller(commands.Cog):
                 "'/certgen' - Generate A Cert\n"
                 "'/certplans' - View Certs Available For Gen\n"
                 "'/certcheck' - Checks UDID For Active Certs\n"
-                "'/mycerts' - View The Certs Youve Gened"
+                "'/mycerts' - View The Certs Youve Gened\n"
                 "'/udidcheck' - Shows You How To Check Your UDID\n"
                 "`/help` — This message"
             ),
