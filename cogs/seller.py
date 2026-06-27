@@ -376,7 +376,7 @@ class Seller(commands.Cog):
                 "`/mykeys` — View your generated keys\n"
                 "`/products` — See products & variants\n"
                 "`/buyergroups` — Your buyer group links\n"
-                "`/socials` — Social media order panel\n"
+                "`/smbhelp` — Shows All Socials Commands\n"
                 "`/certgen` — Generate A Cert\n"
                 "`/certplans` — View Certs Available For Gen\n"
                 "`/certcheck` — Checks UDID For Active Certs\n"
